@@ -7,7 +7,7 @@ from qgis.PyQt.QtGui import QColor
 from qgis.PyQt.QtWidgets import QApplication, QToolTip
 from qgis.core import (
     Qgis, QgsCoordinateTransform, QgsEditFormConfig, QgsFeatureRequest, QgsProject, QgsGeometry, QgsPoint, QgsPointXY,
-    QgsRectangle, QgsSettings, QgsVectorLayer, QgsVectorLayerUtils, QgsWkbTypes,
+    QgsRectangle, QgsSettings, QgsUnitTypes, QgsVectorLayer, QgsVectorLayerUtils, QgsWkbTypes,
 )
 from qgis.gui import QgsAttributeEditorContext, QgsMapTool, QgsRubberBand, QgsVertexMarker
 
@@ -33,13 +33,14 @@ def _mesmo_pt(a, b):
 class _BaseGuias(QgsMapTool):
     """Base comum: rubber bands, resolução do snap nas guias, teclas."""
 
-    def __init__(self, iface, acao, medidas=None):
+    def __init__(self, iface, acao, medidas=None, intervalo=None):
         self.iface = iface
         canvas = iface.mapCanvas()
         super().__init__(canvas)
         self.setAction(acao)
         self.setCursor(QtC.CrossCursor)
         self.medidas = medidas      # MedidasAoVivo (comprimento/área enquanto desenha)
+        self.intervalo = intervalo  # IntervaloDistancia (aderência por passo de distância)
         self._ult_pt = None         # último ponto resolvido do cursor
         self.guias_ligadas = True
         self.mostrar_45 = True
@@ -311,7 +312,73 @@ class _BaseGuias(QgsMapTool):
             ligado = self.medidas.alternar()
             self._status("Medidas ao vivo (comprimento e área) %s" % ("LIGADAS" if ligado else "DESLIGADAS"))
             return True
+        if k == QtC.Key_D and self.intervalo is not None:
+            ligado = self.intervalo.alternar()
+            self._status("Intervalo de distância (%s m) %s" % (self.intervalo.texto(),
+                                                              "LIGADO" if ligado else "DESLIGADO"))
+            return True
         return False
+
+    # ---------- intervalo de distância (aderência por passo) ----------
+    def _pode_passo(self, rot, ativas):
+        """O passo vale para ponto livre ou deslizando numa guia; vértice, interseções,
+        borda e ponto inicial têm prioridade. SHIFT deixa tudo livre."""
+        if self.intervalo is None or not self.intervalo.ligado:
+            return False
+        if QApplication.keyboardModifiers() & QtC.ShiftModifier:
+            return False
+        if not ativas:
+            return rot == ""
+        return len(ativas) == 1 and "×" not in rot
+
+    def _passo(self, ancora, pt, guia, lyr):
+        """Ajusta pt para que a distância até a âncora seja múltiplo do intervalo.
+        Conta no SRC da camada (igual aos rótulos de comprimento). Com guia, o ponto
+        continua sobre ela. Devolve o ponto no SRC do mapa, ou None."""
+        if ancora is None or lyr is None or lyr.crs().isGeographic():
+            return None
+        try:
+            metros = Qgis.DistanceUnit.Meters
+        except AttributeError:
+            metros = QgsUnitTypes.DistanceMeters
+        f = QgsUnitTypes.fromUnitToUnitFactor(lyr.crs().mapUnits(), metros)   # unidade da camada -> m
+        if not f or f <= 0:
+            return None
+        passo = self.intervalo.valor / f
+        a = self.toLayerCoordinates(lyr, ancora)
+        q = self.toLayerCoordinates(lyr, pt)
+        dx, dy = q.x() - a.x(), q.y() - a.y()
+        d = math.hypot(dx, dy)
+        if d < 1e-12 or passo <= 0:
+            return None
+        n = max(1, int(round(d / passo)))
+        if guia is None:
+            r = n * passo
+            res = QgsPointXY(a.x() + dx / d * r, a.y() + dy / d * r)
+        else:
+            g0 = self.toLayerCoordinates(lyr, guia.o)
+            g1 = self.toLayerCoordinates(lyr, QgsPointXY(guia.o.x() + guia.dx * 100.0,
+                                                          guia.o.y() + guia.dy * 100.0))
+            ux, uy = g1.x() - g0.x(), g1.y() - g0.y()
+            nu = math.hypot(ux, uy)
+            if nu < 1e-12:
+                return None
+            ux, uy = ux / nu, uy / nu
+            wx, wy = g0.x() - a.x(), g0.y() - a.y()
+            b = wx * ux + wy * uy
+            c0 = wx * wx + wy * wy
+            # o círculo (âncora, n×passo) precisa alcançar a guia
+            n = max(n, int(math.ceil(math.sqrt(max(0.0, c0 - b * b)) / passo - 1e-9)))
+            r = n * passo
+            raiz = math.sqrt(max(0.0, b * b - (c0 - r * r)))
+            tq = (q.x() - g0.x()) * ux + (q.y() - g0.y()) * uy
+            t = min((-b + raiz, -b - raiz), key=lambda t: abs(t - tq))
+            res = QgsPointXY(g0.x() + ux * t, g0.y() + uy * t)
+        return self.toMapCoordinates(lyr, res)
+
+    def _rotulo_passo(self, rot):
+        txt = "passo %s m" % self.intervalo.texto()
+        return "%s · %s" % (rot, txt) if rot else txt[0].upper() + txt[1:]
 
     def deactivate(self):
         self.cancelar()
@@ -333,8 +400,8 @@ class FerramentaMoverVertice(_BaseGuias):
     TIPOS = (PONTO, LINHA, POLIGONO)
     NOME_TIPOS = "ponto, linha ou polígono"
 
-    def __init__(self, iface, acao, medidas=None):
-        super().__init__(iface, acao, medidas)
+    def __init__(self, iface, acao, medidas=None, intervalo=None):
+        super().__init__(iface, acao, medidas, intervalo)
         # linha tracejada da posição original até o cursor (deslocamento de ponto)
         self.rb_desloc = self._rb(LINHA, QColor(200, 0, 170, 200), 1, QtC.DashLine)
         self.sel = None          # dict com a edição em andamento
@@ -348,7 +415,7 @@ class FerramentaMoverVertice(_BaseGuias):
         self._status("Mover vértice/ponto com guias: clique num vértice ou ponto para mover ou num lado para CRIAR vértice (+) · "
                      "Delete apaga · "
                      "Esc/botão direito cancela · SHIFT livre · G guias · 4 45° · I interseção c/ camadas · "
-                     "M medidas")
+                     "M medidas · D intervalo")
 
     # --- encontrar vértice mais próximo ---
     def _vertice_proximo(self, lyr, p):
@@ -494,7 +561,14 @@ class FerramentaMoverVertice(_BaseGuias):
             return (lyr == s["lyr"] and fid == s["fid"] and
                     (_dist(a, orig) < 1e-9 or _dist(b, orig) < 1e-9))
 
-        return self.resolver(p, s["guias"], ignorar_match=ignorar, ignorar_seg=ignorar_seg)
+        pt, rot, ativas = self.resolver(p, s["guias"], ignorar_match=ignorar, ignorar_seg=ignorar_seg)
+        if self._pode_passo(rot, ativas):
+            # na guia: o lado daquela guia (a guia nasce no vértice vizinho); livre: o lado anterior
+            ancora, guia = (ativas[0].o, ativas[0]) if ativas else (s["ancora"], None)
+            ajustado = self._passo(ancora, pt, guia, s["lyr"])
+            if ajustado is not None:
+                pt, rot = ajustado, self._rotulo_passo(rot)
+        return pt, rot, ativas
 
     def _previa(self, pt):
         s = self.sel
@@ -559,7 +633,16 @@ class FerramentaMoverVertice(_BaseGuias):
                     return
                 novo = True   # vértice criado: posiciona com as guias e grava ao clicar
             guias, _ = self._montar_guias(lyr, geom, idx)
-            self.sel = dict(lyr=lyr, fid=fid, idx=idx, geom=geom, orig=vm, guias=guias, novo=novo)
+            # âncora do intervalo quando o vértice anda livre: vizinho anterior (ou o próximo);
+            # num ponto, a própria posição original (o passo vale para o deslocamento)
+            ancora = vm
+            if lyr.geometryType() != PONTO:
+                ant, prox = geom.adjacentVertices(idx)
+                viz = ant if ant >= 0 else prox
+                if viz >= 0:
+                    ancora = self.toMapCoordinates(lyr, QgsPointXY(geom.vertexAt(viz)))
+            self.sel = dict(lyr=lyr, fid=fid, idx=idx, geom=geom, orig=vm, guias=guias, novo=novo,
+                            ancora=ancora)
             self.rb_prev.reset(lyr.geometryType())
             # setColor muda contorno E preenchimento: primeiro ele, depois o preenchimento transparente
             self.rb_prev.setColor(QColor(0, 120, 255, 230))
@@ -664,8 +747,8 @@ class FerramentaDesenhar(_BaseGuias):
     """Desenha linha/polígono novo com guias de continuação, 90° e 45°
     em relação ao último lado (e ao primeiro lado, para fechar polígonos)."""
 
-    def __init__(self, iface, acao, medidas=None):
-        super().__init__(iface, acao, medidas)
+    def __init__(self, iface, acao, medidas=None, intervalo=None):
+        super().__init__(iface, acao, medidas, intervalo)
         self.pts = []
         self.ref = (1.0, 0.0)
         self.tipo = LINHA
@@ -674,7 +757,7 @@ class FerramentaDesenhar(_BaseGuias):
         super().activate()
         self._status("Desenhar com guias: clique esquerdo adiciona · direito/Enter finaliza · "
                      "Backspace desfaz ponto · Esc cancela · SHIFT livre · G guias · 4 45° · I interseção c/ camadas · "
-                     "M medidas")
+                     "M medidas · D intervalo")
 
     def _guias(self):
         if not self.pts:
@@ -699,6 +782,16 @@ class FerramentaDesenhar(_BaseGuias):
             return [(self.pts[0], "Ponto inicial")]
         return []
 
+    def _resolver_desenho(self, p, guias):
+        """Ponto do cursor com guias e, se ligado, o intervalo de distância a partir do último ponto."""
+        pt, rot, ativas = self.resolver(p, guias, self._extras())
+        if self.pts and self._pode_passo(rot, ativas):
+            ajustado = self._passo(self.pts[-1], pt, ativas[0] if ativas else None,
+                                   self.camada_editavel(avisar=False))
+            if ajustado is not None:
+                pt, rot = ajustado, self._rotulo_passo(rot)
+        return pt, rot, ativas
+
     def canvasMoveEvent(self, e):
         p = e.mapPoint()
         if not self.pts:
@@ -706,7 +799,7 @@ class FerramentaDesenhar(_BaseGuias):
             self.mostrar_ponto(pt, rot, pos_evento(e))
             return
         guias = self._guias()
-        pt, rot, ativas = self.resolver(p, guias, self._extras())
+        pt, rot, ativas = self._resolver_desenho(p, guias)
         self._previa(pt)
         self.desenhar_guias(guias, ativas, pt)
         self.mostrar_ponto(pt, rot, pos_evento(e))
@@ -770,7 +863,7 @@ class FerramentaDesenhar(_BaseGuias):
                     self.ref = (b.x() - a.x(), b.y() - a.y())
             pt, _r, _a = self.resolver(e.mapPoint(), [])
         else:
-            pt, _r, _a = self.resolver(e.mapPoint(), self._guias(), self._extras())
+            pt, _r, _a = self._resolver_desenho(e.mapPoint(), self._guias())
         if self.tipo == POLIGONO and len(self.pts) >= 3 and _dist(pt, self.pts[0]) < 1e-9:
             self._finalizar()   # clicou no ponto inicial: fecha
             return

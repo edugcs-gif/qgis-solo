@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- lado sendo desenhado -->
+  <path d="M3 17 H21" fill="none" stroke="#1f5fbf" stroke-width="2"/>
+  <!-- marcas do intervalo -->
+  <path d="M3 13 V21 M7.5 14.5 V19.5 M12 14.5 V19.5 M16.5 14.5 V19.5 M21 13 V21" fill="none" stroke="#e8710a" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="3" cy="17" r="2" fill="#1f5fbf"/>
+  <!-- cursor grudando na marca -->
+  <path d="M16.5 3 V10.5 M13.8 7.8 L16.5 10.6 L19.2 7.8" fill="none" stroke="#e600c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="14.5" y="15" width="4" height="4" fill="#e600c8"/>
+</svg>

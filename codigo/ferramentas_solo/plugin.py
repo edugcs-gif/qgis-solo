@@ -23,6 +23,7 @@ from .beiral.plugin import DescontoBeiralPlugin
 from .filetes.plugin import RemoverFiletes
 from .guias.compat import NIVEL_AVISO
 from .guias.ferramentas import FerramentaDesenhar, FerramentaMoverVertice
+from .guias.intervalo import IntervaloDistancia
 from .medidas.ao_vivo import MedidasAoVivo
 from .medidas.comprimento import ComprimentoSegmentos
 
@@ -58,6 +59,7 @@ class FerramentasSolo:
         self.filetes = None
         self.comprimento = None
         self.medidas = None
+        self.intervalo = None
         self.extras = {}
         self.provedor = None
         self.acoes = []
@@ -98,6 +100,7 @@ class FerramentasSolo:
         # usam as mesmas opções (casas decimais, vírgula, fonte, elipsoidal)
         self.comprimento = ComprimentoSegmentos(self.iface, toolbar=self.toolbar, menu=MENU)
         self.medidas = MedidasAoVivo(self.iface, self.comprimento)
+        self.intervalo = IntervaloDistancia(self.iface, self.comprimento)
 
         # Guias CAD (mover/criar/apagar vértice e desenhar), com medidas ao vivo
         defs = [
@@ -110,7 +113,7 @@ class FerramentasSolo:
                            self.iface.mainWindow())
             acao.setObjectName(nome)
             acao.setCheckable(True)
-            ferramenta = Classe(self.iface, acao, self.medidas)
+            ferramenta = Classe(self.iface, acao, self.medidas, self.intervalo)
             acao.triggered.connect(lambda _c=False, f=ferramenta: self.iface.mapCanvas().setMapTool(f))
             self.toolbar.addAction(acao)
             self.iface.addPluginToVectorMenu(MENU, acao)
@@ -121,6 +124,13 @@ class FerramentasSolo:
         acao_med = self.medidas.criar_acao(self.iface.mainWindow())
         self.toolbar.addAction(acao_med)
         self.iface.addPluginToVectorMenu(MENU, acao_med)
+
+        # Intervalo de distância (aderência por passo): clique liga/desliga, seta escolhe o valor
+        acao_int = self.intervalo.criar_acao(self.iface.mainWindow())
+        self.toolbar.addAction(acao_int)
+        self.intervalo.configurar_botao(self.toolbar)
+        self.iface.addPluginToVectorMenu(MENU, acao_int)
+        self.iface.addPluginToVectorMenu(MENU, self.intervalo.menu.menuAction())
         self.toolbar.addSeparator()
 
         # Comprimento e Área (rótulos fixos das camadas em edição)
@@ -217,6 +227,13 @@ class FerramentasSolo:
             if self.medidas.acao is not None:
                 self.iface.removePluginVectorMenu(MENU, self.medidas.acao)
             self.medidas.remover()
+        if self.intervalo:
+            if self.intervalo.acao is not None:
+                self.iface.removePluginVectorMenu(MENU, self.intervalo.acao)
+            if self.intervalo.menu is not None:
+                self.iface.removePluginVectorMenu(MENU, self.intervalo.menu.menuAction())
+            self.intervalo.remover()
+            self.intervalo = None
         for obj in reversed(list(self.extras.values())):
             try:
                 obj.unload()

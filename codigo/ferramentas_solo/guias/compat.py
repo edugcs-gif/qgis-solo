@@ -27,7 +27,7 @@ for _nome, _esc in [
     ("SolidLine", "PenStyle"), ("LeftButton", "MouseButton"), ("RightButton", "MouseButton"),
     ("ShiftModifier", "KeyboardModifier"), ("Key_4", "Key"), ("Key_Backspace", "Key"),
     ("Key_Delete", "Key"), ("Key_Enter", "Key"), ("Key_Escape", "Key"), ("Key_G", "Key"),
-    ("Key_I", "Key"), ("Key_M", "Key"), ("Key_Return", "Key"),
+    ("Key_D", "Key"), ("Key_I", "Key"), ("Key_M", "Key"), ("Key_Return", "Key"),
     ("RoundJoin", "PenJoinStyle"), ("AlignLeft", "AlignmentFlag"),
 ]:
     setattr(QtC, _nome, _pegar(Qt, _esc + "." + _nome, _nome))
