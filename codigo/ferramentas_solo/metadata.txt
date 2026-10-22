@@ -1,0 +1,22 @@
+[general]
+name=Ferramentas Solo
+qgisMinimumVersion=3.28
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=Ferramentas da Solo num complemento só: barra com Desconto de Beiral, Remover Filetes, Guias CAD com medidas ao vivo, Comprimento e Área, Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF e Relatório de Produtividade, e os scripts da Solo na Caixa de Ferramentas de Processamento.
+about=BARRA "Ferramentas Solo": 1) Desconto de Beiral — recuo de 0.6 nas faces livres da edificação selecionada mantendo as faces na divisa da camada Lotes e criando o polígono na camada "<camada> beiral"; 2) Restaurar original; 3) Remover Filetes — tira filetes finos deixados por diferença/recorte sem mexer nas bordas originais (Ctrl+Alt+F); 4) Mover/criar/apagar vértice com guias — extensões dos lados vizinhos, 90°/45°, interseções entre camadas; em camadas de ponto move o ponto com guias 0°/90°/45° e mostra o deslocamento; 5) Desenhar com guias 90°/45°; 6) Medidas ao desenhar — comprimento dos lados e área do polígono acompanhando o cursor nas ferramentas 4 e 5 (botão liga/desliga ou tecla M); 7) Comprimento e Área — rótulos de comprimento dos segmentos e área das camadas em edição (clique liga/desliga, seta abre as opções); 8) Preencher campo das feições selecionadas de uma vez (desfaz com um Ctrl+Z); 9) Seleção por sobreposição — seleciona polígonos pelo percentual de área sobreposta a outra camada; 10) Importar CAD (DXF) e Exportar seleção para DXF (usa a biblioteca ezdxf, instalada automaticamente se faltar); 11) Relatório de Produtividade por usuário e data. Todo botão da barra aceita atalho em Configurações > Atalhos de teclado (padrões: Beiral Ctrl+Alt+B, Restaurar Ctrl+Alt+Shift+B, Filetes Ctrl+Alt+F). As ferramentas da barra não salvam nada automaticamente: as edições ficam pendentes para revisão. CAIXA DE FERRAMENTAS DE PROCESSAMENTO > Ferramentas Solo: Calcular Testadas pela Via Mais Próxima; Calcular Testadas pelo Logradouro do Lote; Gerar / Atualizar Quadras a partir dos Lotes; Puxar Campo por Interseção (Maior Área); Puxar Valor de Outra Camada/Tabela (Chave Comum); Comparar Camadas e Selecionar; Selecionar Unidades com Edificação de Lote Errado; Trocar parte de caminho em campo. Atenção: "Puxar Campo por Interseção" e "Trocar parte de caminho" (opção atualizar a camada original) gravam direto na fonte de dados. Substitui os complementos "Ferramentas CAD", "Comprimento e Área", "Importar/Exportar DXF", "Relatório de Produtividade", "Preencher Campo" e "Seleção por Sobreposição". Menção honrosa: Joel Victor Feitosa da Silva, autor do complemento original "Comprimento e Área", cujo desenho dos comprimentos e áreas no mapa é a base das medições deste complemento.
+version=3.2
+changelog=3.2 - Ícones novos para Importar CAD (DXF) e Exportar seleção para DXF.
+    3.1 - Preencher Campo e Seleção por Sobreposição entram na barra; todos os botões da barra podem receber atalho em Configurações > Atalhos de teclado (Remover Filetes mantém Ctrl+Alt+F como padrão, agora trocável).
+    3.0 - Importar/Exportar DXF e Relatório de Produtividade entram na barra do Ferramentas Solo; os scripts de Processamento da Solo ficam juntos em Processamento > Ferramentas Solo (testadas pela via mais próxima e pelo logradouro, quadras a partir dos lotes, puxar campo por interseção, puxar valor por chave, comparar e selecionar, unidades com edificação de lote errado, trocar parte de caminho). Algoritmos que editam ou selecionam camadas do projeto rodam na thread principal.
+    2.2 - Autoria completa (Edu Gabriel Castilho Sembalista) e menção honrosa a Joel Victor Feitosa da Silva, autor do Comprimento e Área original.
+    2.1 - Mover vértice também move pontos (camadas de ponto e multiponto), com guias 0°/90°/45° a partir da posição original e distância de deslocamento ao vivo; prévia do mover vértice com preenchimento transparente.
+    2.0 - Ferramentas CAD e Comprimento e Área juntos no Ferramentas Solo; medidas ao vivo (comprimento e área) nas ferramentas de desenhar e de mover vértice, com botão para ligar/desligar e tecla M.
+author=Edu Gabriel Castilho Sembalista
+email=edugcs9999@gmail.com
+tags=cad,beiral,filetes,sliver,extend,guias,vértice,edificação,medida,comprimento,area,segmento,topografia,dxf,testada,quadra,lote,cadastro,processamento
+category=Vector
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=yes

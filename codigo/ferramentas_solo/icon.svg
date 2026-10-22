@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- lote -->
+  <path d="M4 28 L4 9 L22 9 L27 28 Z" fill="#d6e8fb" stroke="#1f5fbf" stroke-width="2" stroke-linejoin="round"/>
+  <!-- guia (extend) -->
+  <path d="M22 9 L20.2 2" fill="none" stroke="#ff8200" stroke-width="1.6" stroke-dasharray="2.2 1.6"/>
+  <!-- cota -->
+  <path d="M4 4.5 H17 M4 2 V7 M17 2 V7" fill="none" stroke="#e8710a" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- vértice -->
+  <rect x="19.5" y="6.5" width="5" height="5" fill="#e600c8"/>
+  <!-- marca Solo (carvão) -->
+  <path d="M9 24 L13 15 L17 24 M13 15 V24" fill="none" stroke="#404040" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="11" y="12.2" width="4" height="2.8" rx="0.6" fill="#404040"/>
+</svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- polígono em construção (área) -->
+  <path d="M3 21 L3 11 L18 11 Z" fill="#cfe3fa"/>
+  <!-- lado já desenhado -->
+  <path d="M3 21 L3 11" fill="none" stroke="#1f5fbf" stroke-width="2"/>
+  <!-- lado que acompanha o cursor -->
+  <path d="M3 11 L18 11" fill="none" stroke="#e600c8" stroke-width="2"/>
+  <path d="M18 11 L3 21" fill="none" stroke="#1f5fbf" stroke-width="1" stroke-dasharray="2 1.5"/>
+  <!-- cota do lado -->
+  <path d="M3 6 H18 M3 3.5 V8.5 M18 3.5 V8.5" fill="none" stroke="#e8710a" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- cursor -->
+  <rect x="16" y="9" width="4" height="4" fill="#e600c8"/>
+</svg>
