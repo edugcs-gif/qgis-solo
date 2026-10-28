@@ -2,7 +2,7 @@
 """Compatibilidade de enums entre QGIS 3 (PyQt5) e QGIS 4 (PyQt6)."""
 from qgis.PyQt.QtCore import Qt
 from qgis.core import Qgis, QgsEditFormConfig, QgsWkbTypes
-from qgis.gui import QgsAttributeEditorContext, QgsVertexMarker
+from qgis.gui import QgsAttributeEditorContext, QgsRubberBand, QgsVertexMarker
 
 
 def _pegar(base, *caminhos):
@@ -28,6 +28,7 @@ for _nome, _esc in [
     ("ShiftModifier", "KeyboardModifier"), ("Key_4", "Key"), ("Key_Backspace", "Key"),
     ("Key_Delete", "Key"), ("Key_Enter", "Key"), ("Key_Escape", "Key"), ("Key_G", "Key"),
     ("Key_D", "Key"), ("Key_I", "Key"), ("Key_M", "Key"), ("Key_P", "Key"), ("Key_Return", "Key"),
+    ("Key_Up", "Key"), ("Key_Down", "Key"),
     ("RoundJoin", "PenJoinStyle"), ("AlignLeft", "AlignmentFlag"),
 ]:
     setattr(QtC, _nome, _pegar(Qt, _esc + "." + _nome, _nome))
@@ -41,6 +42,7 @@ VM = _NS()
 for _nome in ("ICON_BOX", "ICON_CIRCLE", "ICON_CROSS", "ICON_TRIANGLE", "ICON_X"):
     setattr(VM, _nome, _pegar(QgsVertexMarker, "IconType." + _nome, _nome))
 
+RB_CIRCULO = _pegar(QgsRubberBand, "IconType.ICON_CIRCLE", "ICON_CIRCLE")
 NIVEL_INFO = _pegar(Qgis, "MessageLevel.Info", "Info")
 NIVEL_AVISO = _pegar(Qgis, "MessageLevel.Warning", "Warning")
 PONTO = _pegar(Qgis, "GeometryType.Point") if hasattr(Qgis, "GeometryType") else QgsWkbTypes.PointGeometry

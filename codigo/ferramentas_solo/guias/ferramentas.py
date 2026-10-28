@@ -7,12 +7,13 @@ from qgis.PyQt.QtGui import QColor
 from qgis.PyQt.QtWidgets import QApplication, QToolTip
 from qgis.core import (
     Qgis, QgsCoordinateTransform, QgsEditFormConfig, QgsFeatureRequest, QgsProject, QgsGeometry, QgsPoint, QgsPointXY,
-    QgsRectangle, QgsSettings, QgsUnitTypes, QgsVectorLayer, QgsVectorLayerUtils, QgsWkbTypes,
+    QgsExpression, QgsExpressionContext, QgsExpressionContextUtils, QgsRectangle, QgsSettings,
+    QgsUnitTypes, QgsVectorLayer, QgsVectorLayerUtils, QgsWkbTypes,
 )
 from qgis.gui import QgsAttributeEditorContext, QgsMapTool, QgsRubberBand, QgsVertexMarker
 
 from .compat import (FORM_PADRAO, FORM_SUPRIMIR, LINHA, MODO_ADICIONAR, NIVEL_AVISO,
-                     NIVEL_INFO, POLIGONO, PONTO, VM, QtC, pos_evento)
+                     NIVEL_INFO, POLIGONO, PONTO, RB_CIRCULO, VM, QtC, pos_evento)
 from .guias import (dist_ponto_segmento, guias_angulares, intersecao, intersecao_segmento,
                     intersecao_segmentos, nova_guia)
 from ..medidas.ao_vivo import aneis_da_geometria
@@ -428,63 +429,161 @@ class FerramentaMoverVertice(_BaseGuias):
         self.pos_press = None
         self.pegou_no_press = False
         self.marcas_meio = []    # triângulos no meio dos lados ORIGINAIS do vértice em edição
+        # feição sob o cursor: destaque e escolha entre sobrepostas com ↑/↓
+        self.rb_hover = self._rb(POLIGONO, QColor(255, 160, 0, 235), 3, QtC.SolidLine)
+        self.cands = []          # feições candidatas sob o cursor, na ordem de escolha
+        self.sob_cursor = set()  # todas as feições sob o cursor (inclusive só "dentro")
+        self.fid_pref = None     # (camada, fid) escolhida com as setas; vale enquanto estiver sob o cursor
+        self._hover_lyr = None
+        self._hover_pos = None
+        self._nomes = {}         # cache do nome de exibição das feições
 
     def activate(self):
         super().activate()
         self._status("Mover vértice/ponto com guias: clique num vértice ou ponto para mover ou num lado para CRIAR vértice (+) · "
                      "Delete apaga · "
                      "Esc/botão direito cancela · SHIFT livre · G guias · 4 45° · I interseção c/ camadas · "
-                     "M medidas · D intervalo · P meio do lado")
+                     "M medidas · D intervalo · P meio do lado · ↑↓ troca a feição sobreposta")
+        self.fid_pref = None
+        self._nomes = {}
 
-    # --- encontrar vértice mais próximo ---
-    def _vertice_proximo(self, lyr, p):
+    # --- feições sob o cursor ---
+    def _candidatos(self, lyr, p):
+        """Feições da camada ativa sob o cursor, na ordem em que são escolhidas:
+        1) com vértice perto (o mais perto primeiro), 2) com lado perto (criar vértice) e
+        3) em polígonos, as que contêm o cursor. No empate, a de menor área vem antes.
+        Cada uma: dict(tipo="vertice"|"lado"|"dentro", fid, geom, idx, pt, no_meio, d, area)."""
         tol = self._tol()
         ret_map = QgsRectangle(p.x() - tol, p.y() - tol, p.x() + tol, p.y() + tol)
         ret_lyr = self.toLayerCoordinates(lyr, ret_map)
         lp = self.toLayerCoordinates(lyr, p)
+        ponto = QgsGeometry.fromPointXY(lp)
+        tipo_camada = lyr.geometryType()
         req = QgsFeatureRequest().setFilterRect(ret_lyr).setNoAttributes()
-        melhor = None
+        cands = []
         for f in lyr.getFeatures(req):
             g = f.geometry()
             if g is None or g.isEmpty():
                 continue
+            c = dict(fid=f.id(), geom=QgsGeometry(g), idx=-1, pt=None, no_meio=False, d=0.0,
+                     area=g.area() if tipo_camada == POLIGONO else g.length())
             v, idx, _a, _b, _d2 = g.closestVertex(lp)
-            if idx < 0:
-                continue
-            vm = self.toMapCoordinates(lyr, QgsPointXY(v))
-            d = _dist(vm, p)
-            if d <= tol and (melhor is None or d < melhor[0]):
-                melhor = (d, f.id(), idx, QgsGeometry(g), vm)
-        return melhor
+            if idx >= 0:
+                vm = self.toMapCoordinates(lyr, QgsPointXY(v))
+                d = _dist(vm, p)
+                if d <= tol:
+                    c.update(tipo="vertice", idx=idx, pt=vm, d=d)
+                    cands.append(c)
+                    continue
+            if tipo_camada != PONTO:
+                _d2, q, depois, _lado = g.closestSegmentWithContext(lp)
+                if depois >= 0:
+                    qm = self.toMapCoordinates(lyr, QgsPointXY(q))
+                    d = _dist(qm, p)
+                    if d <= tol:
+                        no_meio = False
+                        if self._meio_ligado():
+                            a, b = g.vertexAt(depois - 1), g.vertexAt(depois)
+                            meio = self.toMapCoordinates(lyr, QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2))
+                            if _dist(meio, p) <= tol:
+                                qm, no_meio = meio, True
+                        c.update(tipo="lado", idx=depois, pt=qm, no_meio=no_meio, d=d)
+                        cands.append(c)
+                        continue
+            if tipo_camada == POLIGONO and g.contains(ponto):
+                c.update(tipo="dentro")
+                cands.append(c)
+        ordem = {"vertice": 0, "lado": 1, "dentro": 2}
+        cands.sort(key=lambda c: (ordem[c["tipo"]], round(c["d"] / tol, 6) if tol else 0, c["area"], c["fid"]))
+        return cands
 
-    def _segmento_proximo(self, lyr, p):
-        """Ponto mais próximo num lado de feição da camada (para criar vértice).
-        Com a aderência no meio do lado ligada, perto do meio gruda no ponto médio.
-        Devolve (dist, fid, índice, geometria, ponto, no_meio)."""
-        tol = self._tol()
-        ret_map = QgsRectangle(p.x() - tol, p.y() - tol, p.x() + tol, p.y() + tol)
-        ret_lyr = self.toLayerCoordinates(lyr, ret_map)
-        lp = self.toLayerCoordinates(lyr, p)
-        req = QgsFeatureRequest().setFilterRect(ret_lyr).setNoAttributes()
-        melhor = None
-        for f in lyr.getFeatures(req):
-            g = f.geometry()
-            if g is None or g.isEmpty():
-                continue
-            _d2, q, depois, _lado = g.closestSegmentWithContext(lp)
-            if depois < 0:
-                continue
-            qm = self.toMapCoordinates(lyr, QgsPointXY(q))
-            d = _dist(qm, p)
-            if d <= tol and (melhor is None or d < melhor[0]):
-                no_meio = False
-                if self._meio_ligado():
-                    a, b = g.vertexAt(depois - 1), g.vertexAt(depois)
-                    meio = self.toMapCoordinates(lyr, QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2))
-                    if _dist(meio, p) <= tol:
-                        qm, no_meio = meio, True
-                melhor = (d, f.id(), depois, QgsGeometry(g), qm, no_meio)
-        return melhor
+    def _definir_candidatos(self, lyr, p):
+        """Com vértice ou lado perto do cursor, só essas feições entram na troca (são as que o
+        clique edita); senão, os polígonos que contêm o cursor (só para destacar e escolher)."""
+        todos = self._candidatos(lyr, p) if lyr else []
+        self.sob_cursor = {(lyr.id(), c["fid"]) for c in todos} if lyr else set()
+        acao = [c for c in todos if c["tipo"] != "dentro"]
+        self.cands = acao or todos
+
+    def _escolhido(self):
+        """(candidato, posição) da feição escolhida: a das setas, se ela está entre as candidatas.
+        A escolha é esquecida quando a feição sai de baixo do cursor."""
+        lyr = self._hover_lyr
+        if self.fid_pref is not None and self.fid_pref not in self.sob_cursor:
+            self.fid_pref = None
+        for i, c in enumerate(self.cands):
+            if lyr is not None and (lyr.id(), c["fid"]) == self.fid_pref:
+                return c, i
+        return (self.cands[0], 0) if self.cands else (None, -1)
+
+    def _nome_feicao(self, lyr, fid):
+        """'fid 12' e, se a camada tem nome de exibição, o valor dele (ex.: 'fid 12 · Lote 05')."""
+        chave = (lyr.id(), fid)
+        if chave not in self._nomes:
+            nome = "fid %s" % fid
+            try:
+                expr = lyr.displayExpression()
+                if expr:
+                    f = lyr.getFeature(fid)
+                    ctx = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(lyr))
+                    ctx.setFeature(f)
+                    v = QgsExpression(expr).evaluate(ctx)
+                    v = "" if v is None else str(v).strip()
+                    if v and v != "NULL" and v != str(fid):
+                        nome += " · " + (v if len(v) <= 40 else v[:39] + "…")
+            except Exception:
+                pass
+            self._nomes[chave] = nome
+        return self._nomes[chave]
+
+    def _mostrar_hover(self):
+        """Destaca a feição escolhida e mostra o vértice/lado em que o clique vai agir."""
+        lyr = self._hover_lyr
+        c, i = self._escolhido()
+        self.hover = self.hover_seg = None
+        if lyr is None or c is None:
+            self.rb_hover.reset(POLIGONO)
+            self.marcador.hide()
+            self._mostrar_tip(None, None)
+            return
+        self.rb_hover.reset(lyr.geometryType())
+        self.rb_hover.setColor(QColor(255, 160, 0, 235))       # contorno (e preenchimento)...
+        if lyr.geometryType() == POLIGONO:
+            self.rb_hover.setFillColor(QColor(255, 160, 0, 45))  # ...depois o preenchimento claro
+        elif lyr.geometryType() == PONTO:
+            self.rb_hover.setIcon(RB_CIRCULO)
+            self.rb_hover.setIconSize(16)
+        self.rb_hover.setToGeometry(c["geom"], lyr)
+        nome = self._nome_feicao(lyr, c["fid"])
+        if c["tipo"] == "vertice":
+            self.hover = (lyr, (c["d"], c["fid"], c["idx"], c["geom"], c["pt"]))
+            self.marcador.setIconType(VM.ICON_BOX)
+            texto = ("Ponto · " if lyr.geometryType() == PONTO else "Vértice · ") + nome
+        elif c["tipo"] == "lado":
+            self.hover_seg = (lyr, (c["d"], c["fid"], c["idx"], c["geom"], c["pt"], c["no_meio"]))
+            self.marcador.setIconType(VM.ICON_TRIANGLE if c["no_meio"] else VM.ICON_CROSS)
+            texto = ("Criar vértice no meio do lado" if c["no_meio"] else "Criar vértice") + " · " + nome
+        else:
+            texto = nome
+        if c["pt"] is not None:
+            self.marcador.setCenter(c["pt"])
+            self.marcador.show()
+        else:
+            self.marcador.hide()
+        if len(self.cands) > 1:
+            texto += "  (%d de %d · ↑↓ troca)" % (i + 1, len(self.cands))
+        if self._hover_pos is not None:
+            self._mostrar_tip(texto, self._hover_pos)
+
+    def _trocar_feicao(self, passo):
+        """Setas ↑/↓: passa para a próxima/anterior feição sobreposta sob o cursor."""
+        if self.sel is not None or len(self.cands) < 2:
+            return False
+        _c, i = self._escolhido()
+        self.fid_pref = (self._hover_lyr.id(), self.cands[(i + passo) % len(self.cands)]["fid"])
+        self._tip = None                       # força a dica a atualizar no mesmo lugar
+        self._mostrar_hover()
+        return True
 
     def _inserir_na_geom(self, lyr, g, depois, pm):
         """Cópia da geometria com um vértice novo antes do índice `depois`
@@ -502,11 +601,12 @@ class FerramentaMoverVertice(_BaseGuias):
         return g2
 
     def _itens(self):
-        return super()._itens() + [self.rb_desloc] + self.marcas_meio
+        return super()._itens() + [self.rb_desloc, self.rb_hover] + self.marcas_meio
 
     def limpar_visual(self):
         super().limpar_visual()
         self.rb_desloc.reset(LINHA)
+        self.rb_hover.reset(POLIGONO)
         self._limpar_marcas_meio()
 
     # --- meio dos lados como estavam ANTES da edição ---
@@ -582,24 +682,10 @@ class FerramentaMoverVertice(_BaseGuias):
         p = e.mapPoint()
         if self.sel is None:
             lyr = self.camada_editavel(avisar=False)
-            v = self._vertice_proximo(lyr, p) if lyr else None
-            sg = None if (v or not lyr or lyr.geometryType() == PONTO) else self._segmento_proximo(lyr, p)
-            self.hover = (lyr, v) if v else None
-            self.hover_seg = (lyr, sg) if sg else None
-            if v:
-                self.marcador.setIconType(VM.ICON_BOX)
-                self.marcador.setCenter(v[4])
-                self.marcador.show()
-                self._mostrar_tip(None, None)
-            elif sg:
-                self.marcador.setIconType(VM.ICON_TRIANGLE if sg[5] else VM.ICON_CROSS)
-                self.marcador.setCenter(sg[4])
-                self.marcador.show()
-                self._mostrar_tip("Criar vértice no meio do lado" if sg[5] else "Criar vértice",
-                                  pos_evento(e))
-            else:
-                self.marcador.hide()
-                self._mostrar_tip(None, None)
+            self._hover_lyr = lyr
+            self._hover_pos = pos_evento(e)
+            self._definir_candidatos(lyr, p)
+            self._mostrar_hover()
             return
         pt, rot, ativas = self._resolver_sel(p)
         g2 = self._previa(pt)
@@ -684,16 +770,18 @@ class FerramentaMoverVertice(_BaseGuias):
             lyr = self.camada_editavel()
             if not lyr:
                 return
-            v = self._vertice_proximo(lyr, e.mapPoint())
+            # a mesma feição destacada (inclusive a escolhida com ↑/↓)
+            self._hover_lyr = lyr
+            self._definir_candidatos(lyr, e.mapPoint())
+            c, _i = self._escolhido()
+            if c is None or c["tipo"] == "dentro":
+                return
             novo = False
-            if v:
-                _d, fid, idx, geom, vm = v
+            fid, idx, vm = c["fid"], c["idx"], c["pt"]
+            if c["tipo"] == "vertice":
+                geom = c["geom"]
             else:
-                sg = None if lyr.geometryType() == PONTO else self._segmento_proximo(lyr, e.mapPoint())
-                if not sg:
-                    return
-                _d, fid, idx, geom0, vm, _no_meio = sg
-                geom = self._inserir_na_geom(lyr, geom0, idx, vm)
+                geom = self._inserir_na_geom(lyr, c["geom"], idx, vm)
                 if geom is None:
                     return
                 novo = True   # vértice criado: posiciona com as guias e grava ao clicar
@@ -709,6 +797,7 @@ class FerramentaMoverVertice(_BaseGuias):
             self.sel = dict(lyr=lyr, fid=fid, idx=idx, geom=geom, orig=vm, guias=guias, novo=novo,
                             ancora=ancora, meios_orig=self._meios_originais(lyr, geom, idx, novo))
             self._mostrar_marcas_meio()
+            self.rb_hover.reset(POLIGONO)
             self.rb_prev.reset(lyr.geometryType())
             # setColor muda contorno E preenchimento: primeiro ele, depois o preenchimento transparente
             self.rb_prev.setColor(QColor(0, 120, 255, 230))
@@ -752,6 +841,9 @@ class FerramentaMoverVertice(_BaseGuias):
     def cancelar(self):
         self.sel = None
         self.pegou_no_press = False
+        self.cands = []          # a geometria pode ter mudado: o próximo movimento do mouse refaz
+        self.sob_cursor = set()
+        self.hover = self.hover_seg = None
         self.limpar_visual()
 
     def _apagar_vertice(self):
@@ -789,6 +881,13 @@ class FerramentaMoverVertice(_BaseGuias):
         return True
 
     def keyPressEvent(self, e):
+        if e.key() in (QtC.Key_Up, QtC.Key_Down):
+            if self._trocar_feicao(1 if e.key() == QtC.Key_Up else -1):
+                # no QGIS, "ignorar" o evento quer dizer que a ferramenta o usou: o mapa não anda
+                e.ignore()
+            else:
+                e.accept()          # sem feições sobrepostas: as setas movem o mapa, como no QGIS
+            return
         if e.key() == QtC.Key_Escape:
             self.cancelar()
             e.accept()
