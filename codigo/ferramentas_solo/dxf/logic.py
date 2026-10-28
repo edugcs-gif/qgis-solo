@@ -1,7 +1,9 @@
 import os
+import re
 import sys
 import subprocess
 import gc
+import unicodedata
 
 from qgis.PyQt.QtCore import QVariant
 from qgis.core import (
@@ -12,6 +14,7 @@ from qgis.core import (
     QgsField,
     QgsWkbTypes,
     QgsProject,
+    QgsVectorFileWriter,
     QgsVectorLayer,
 )
 
@@ -68,10 +71,218 @@ def validar_arquivo(caminho):
 
 
 # ---------------------------------------------------------------------------
+# Onde as feições importadas ficam salvas
+# ---------------------------------------------------------------------------
+# chave: (rótulo, driver OGR, extensão, destino é um arquivo único?)
+FORMATOS = {
+    "gpkg": ("GeoPackage (.gpkg)", "GPKG", ".gpkg", True),
+    "shp": ("Shapefile (.shp)", "ESRI Shapefile", ".shp", False),
+    "geojson": ("GeoJSON (.geojson)", "GeoJSON", ".geojson", False),
+    "memoria": ("Camada temporária (não salva)", None, None, False),
+}
+ORDEM_FORMATOS = ("gpkg", "shp", "geojson", "memoria")
+
+
+class Cancelado(Exception):
+    """O usuário desistiu (ex.: na pergunta sobre camadas que já existem)."""
+
+
+class Destino:
+    """formato: chave de FORMATOS. caminho: arquivo .gpkg ou pasta (shp/geojson); vazio = mesma
+    pasta e mesmo nome do DXF. ao_existir(nomes, onde) -> "substituir", "renomear" ou None
+    (cancelar); sem ele, cria com outro nome."""
+
+    def __init__(self, formato="memoria", caminho="", ao_existir=None):
+        self.formato = formato if formato in FORMATOS else "memoria"
+        self.caminho = (caminho or "").strip()
+        self.ao_existir = ao_existir
+
+    def alvo(self, caminho_dxf):
+        """Arquivo .gpkg ou pasta onde as camadas vão ser gravadas."""
+        _rot, _drv, ext, arquivo_unico = FORMATOS[self.formato]
+        if ext is None:
+            return ""
+        if arquivo_unico:
+            alvo = self.caminho or os.path.splitext(caminho_dxf)[0] + ext
+            if not alvo.lower().endswith(ext):
+                alvo += ext
+            return alvo
+        return self.caminho or os.path.dirname(os.path.abspath(caminho_dxf))
+
+
+def nome_seguro(texto):
+    """Nome de tabela/arquivo sem acento, espaço nem caractere especial."""
+    t = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode("ascii")
+    t = re.sub(r"[^A-Za-z0-9_-]+", "_", t).strip("_")
+    return t or "camada"
+
+
+def _acao(nome):
+    try:
+        return getattr(QgsVectorFileWriter, nome)
+    except AttributeError:
+        return getattr(QgsVectorFileWriter.ActionOnExistingFile, nome)
+
+
+def _sem_erro(erro):
+    return getattr(erro, "value", erro) == 0
+
+
+def _tabelas_gpkg(arquivo):
+    if not os.path.exists(arquivo):
+        return set()
+    try:
+        from qgis.core import QgsProviderRegistry
+        return {d.name().lower() for d in QgsProviderRegistry.instance().querySublayers(arquivo)}
+    except Exception:
+        return set()
+
+
+def _sem_repetir(nome, usados):
+    if nome.lower() not in usados:
+        return nome
+    n = 2
+    while ("%s_%d" % (nome, n)).lower() in usados:
+        n += 1
+    return "%s_%d" % (nome, n)
+
+
+def _gravar(camadas, caminho_dxf, destino, feedback):
+    """Grava as camadas de memória no formato escolhido e devolve as camadas do arquivo."""
+    rotulo, driver, ext, arquivo_unico = FORMATOS[destino.formato]
+    alvo = destino.alvo(caminho_dxf)
+    if arquivo_unico:
+        pasta = os.path.dirname(os.path.abspath(alvo))
+        existentes = _tabelas_gpkg(alvo)
+    else:
+        pasta = alvo
+        existentes = None
+    try:
+        os.makedirs(pasta, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError("Não foi possível criar a pasta de destino:\n%s\n%s" % (pasta, exc))
+    prefixo = "" if arquivo_unico else nome_seguro(os.path.splitext(os.path.basename(caminho_dxf))[0]) + "_"
+
+    def existe(nome):
+        if arquivo_unico:
+            return nome.lower() in existentes
+        return any(os.path.exists(os.path.join(pasta, nome + e)) for e in (ext, ext.upper()))
+
+    # nomes sem repetir dentro da própria importação (ex.: layers "LOTE 1" e "LOTE_1")
+    bases, nomes, usados = [], [], set()
+    for _vl, _exib, base in camadas:
+        base = prefixo + nome_seguro(base)
+        nome = _sem_repetir(base, usados)
+        usados.add(nome.lower())
+        bases.append(base)
+        nomes.append(nome)
+
+    conflitos = [n for n in nomes if existe(n)]
+    acao = "renomear"
+    if conflitos:
+        onde = alvo if arquivo_unico else pasta
+        acao = destino.ao_existir(conflitos, onde) if destino.ao_existir else "renomear"
+        if acao is None:
+            raise Cancelado()
+    if acao == "renomear" and conflitos:
+        # os que já existem ganham _2, _3...; os outros mantêm o nome
+        ocupados = {n.lower() for n in nomes}
+        finais = []
+        for base, nome in zip(bases, nomes):
+            if not existe(nome):
+                finais.append(nome)
+                continue
+            n = 2
+            while existe("%s_%d" % (base, n)) or ("%s_%d" % (base, n)).lower() in ocupados:
+                n += 1
+            novo = "%s_%d" % (base, n)
+            ocupados.add(novo.lower())
+            finais.append(novo)
+        nomes = finais
+
+    contexto = QgsProject.instance().transformContext()
+    saidas, falhas = [], []
+    for (vl, exib, _base), nome in zip(camadas, nomes):
+        op = QgsVectorFileWriter.SaveVectorOptions()
+        op.driverName = driver
+        op.fileEncoding = "UTF-8"
+        if arquivo_unico:
+            arquivo = alvo
+            op.layerName = nome
+            # arquivo novo: cria; arquivo que já existe: só cria/substitui a tabela (nunca apaga o resto)
+            op.actionOnExistingFile = _acao("CreateOrOverwriteLayer" if os.path.exists(alvo)
+                                            else "CreateOrOverwriteFile")
+            fonte = "%s|layername=%s" % (arquivo, nome)
+        else:
+            arquivo = os.path.join(pasta, nome + ext)
+            op.actionOnExistingFile = _acao("CreateOrOverwriteFile")
+            fonte = arquivo
+        res = QgsVectorFileWriter.writeAsVectorFormatV3(vl, arquivo, contexto, op)
+        if not _sem_erro(res[0]):
+            falhas.append("%s: %s" % (nome, res[1] or "erro ao gravar (o arquivo pode estar aberto em outro programa)"))
+            continue
+        nova = QgsVectorLayer(fonte, exib, "ogr")
+        if not nova.isValid():
+            falhas.append("%s: gravado, mas não abriu no QGIS" % nome)
+            continue
+        saidas.append(nova)
+        if acao == "substituir":
+            _recarregar_iguais(fonte)
+
+    if falhas and not saidas:
+        raise RuntimeError("Nada foi gravado em %s:\n%s" % (alvo, "\n".join(falhas)))
+    texto = "\nSalvo em %s: %s" % (rotulo.split(" (")[0], alvo)
+    if not arquivo_unico:
+        texto += "  (%d arquivo(s) %s)" % (len(saidas), ext)
+    if falhas:
+        texto += "\n\nNão foi possível gravar:\n" + "\n".join(falhas)
+    return saidas, texto
+
+
+def _normal(fonte):
+    partes = fonte.split("|")
+    return "|".join([os.path.normcase(os.path.abspath(partes[0]))] + [p.lower() for p in partes[1:]])
+
+
+def _recarregar_iguais(fonte):
+    """Camadas do projeto que já usavam a tabela/arquivo substituído passam a mostrar o novo conteúdo."""
+    alvo = _normal(fonte)
+    for lyr in QgsProject.instance().mapLayers().values():
+        try:
+            if isinstance(lyr, QgsVectorLayer) and _normal(lyr.source()) == alvo:
+                lyr.reload()
+                lyr.updateExtents()
+                lyr.triggerRepaint()
+        except Exception:
+            pass
+
+
+def entregar(camadas, nome_grupo, caminho_dxf, destino, feedback):
+    """Coloca as camadas importadas no projeto, salvando antes no formato escolhido.
+    camadas: lista de (camada de memória, nome no painel, nome base da tabela/arquivo).
+    Devolve o texto a acrescentar na mensagem final."""
+    destino = destino or Destino()
+    if destino.formato == "memoria":
+        finais, texto = [vl for vl, _e, _b in camadas], ""
+    else:
+        finais, texto = _gravar(camadas, caminho_dxf, destino, feedback)
+    project = QgsProject.instance()
+    if nome_grupo:
+        grupo = project.layerTreeRoot().addGroup(nome_grupo)
+        for vl in finais:
+            project.addMapLayer(vl, False)
+            grupo.addLayer(vl)
+    else:
+        for vl in finais:
+            project.addMapLayer(vl)
+    return texto
+
+
+# ---------------------------------------------------------------------------
 # 1) Importar Pontos / Vértices / Blocos / Centro de Círculos
 #    (adaptado de ImportarPontosVerticesBlocosCAD.py)
 # ---------------------------------------------------------------------------
-def importar_pontos(caminho, feedback):
+def importar_pontos(caminho, feedback, destino=None):
     validar_arquivo(caminho)
     ezdxf = garantir_ezdxf(feedback)
 
@@ -128,10 +339,9 @@ def importar_pontos(caminho, feedback):
 
         project = QgsProject.instance()
         crs = project.crs().authid()
-        root = project.layerTreeRoot()
 
         nome_grupo = os.path.basename(caminho).split('.')[0] + " - Pontos CAD"
-        grupo = root.addGroup(nome_grupo)
+        camadas = []
 
         total_pontos = 0
         for nome_layer, lista_pontos in pontos_por_layer.items():
@@ -150,11 +360,11 @@ def importar_pontos(caminho, feedback):
             pr.addFeatures(features)
             vl.updateExtents()
 
-            project.addMapLayer(vl, False)
-            grupo.addLayer(vl)
+            camadas.append((vl, vl.name(), f"{nome_layer}_pontos"))
             total_pontos += len(lista_pontos)
 
-        return f"Sucesso! {total_pontos} pontos (incluindo blocos e centros de círculos) divididos em {len(pontos_por_layer)} camadas."
+        salvo = entregar(camadas, nome_grupo, caminho, destino, feedback)
+        return f"Sucesso! {total_pontos} pontos (incluindo blocos e centros de círculos) divididos em {len(pontos_por_layer)} camadas." + salvo
 
     finally:
         if doc is not None:
@@ -171,7 +381,7 @@ def importar_pontos(caminho, feedback):
 #    (adaptado de importardwgtextos.py) - cria uma única camada de pontos
 #    com os atributos Texto e Layer_CAD, adicionada diretamente ao projeto
 # ---------------------------------------------------------------------------
-def importar_textos(caminho, feedback):
+def importar_textos(caminho, feedback, destino=None):
     validar_arquivo(caminho)
     ezdxf = garantir_ezdxf(feedback)
 
@@ -217,9 +427,9 @@ def importar_textos(caminho, feedback):
 
         pr.addFeatures(features)
         vl.updateExtents()
-        QgsProject.instance().addMapLayer(vl)
+        salvo = entregar([(vl, vl.name(), "textos")], None, caminho, destino, feedback)
 
-        return f"Sucesso! {total} textos importados."
+        return f"Sucesso! {total} textos importados." + salvo
 
     finally:
         if doc is not None:
@@ -235,7 +445,7 @@ def importar_textos(caminho, feedback):
 # 3) Importar Linhas
 #    (adaptado de importarlinhas.py)
 # ---------------------------------------------------------------------------
-def importar_linhas(caminho, feedback):
+def importar_linhas(caminho, feedback, destino=None):
     validar_arquivo(caminho)
     ezdxf = garantir_ezdxf(feedback)
 
@@ -299,10 +509,9 @@ def importar_linhas(caminho, feedback):
 
         project = QgsProject.instance()
         crs = project.crs().authid()
-        root = project.layerTreeRoot()
 
         nome_grupo = os.path.basename(caminho).split('.')[0] + " - Linhas"
-        grupo = root.addGroup(nome_grupo)
+        camadas = []
 
         total_feicoes = 0
         for nome_layer, geometrias in linhas_por_layer.items():
@@ -321,11 +530,11 @@ def importar_linhas(caminho, feedback):
             pr.addFeatures(features)
             vl.updateExtents()
 
-            project.addMapLayer(vl, False)
-            grupo.addLayer(vl)
+            camadas.append((vl, vl.name(), f"{nome_layer}_linhas"))
             total_feicoes += len(geometrias)
 
-        return f"Sucesso! {total_feicoes} linhas importadas e divididas em {len(linhas_por_layer)} camadas."
+        salvo = entregar(camadas, nome_grupo, caminho, destino, feedback)
+        return f"Sucesso! {total_feicoes} linhas importadas e divididas em {len(linhas_por_layer)} camadas." + salvo
 
     finally:
         if doc is not None:
@@ -341,7 +550,7 @@ def importar_linhas(caminho, feedback):
 # 4) Importar Polígonos
 #    (adaptado de importarpoligonoscad.py)
 # ---------------------------------------------------------------------------
-def importar_poligonos(caminho, feedback):
+def importar_poligonos(caminho, feedback, destino=None):
     validar_arquivo(caminho)
     ezdxf = garantir_ezdxf(feedback)
 
@@ -404,10 +613,9 @@ def importar_poligonos(caminho, feedback):
 
         project = QgsProject.instance()
         crs = project.crs().authid()
-        root = project.layerTreeRoot()
 
         nome_grupo = os.path.basename(caminho).split('.')[0] + " - Polígonos"
-        grupo = root.addGroup(nome_grupo)
+        camadas = []
 
         for nome_layer, geometrias in poligonos_por_layer.items():
             vl = QgsVectorLayer(f"Polygon?crs={crs}", f"Layer: {nome_layer}", "memory")
@@ -425,10 +633,10 @@ def importar_poligonos(caminho, feedback):
             pr.addFeatures(features)
             vl.updateExtents()
 
-            project.addMapLayer(vl, False)
-            grupo.addLayer(vl)
+            camadas.append((vl, vl.name(), f"{nome_layer}_poligonos"))
 
-        return f"Sucesso! {len(poligonos_por_layer)} camadas diferentes foram importadas."
+        salvo = entregar(camadas, nome_grupo, caminho, destino, feedback)
+        return f"Sucesso! {len(poligonos_por_layer)} camadas diferentes foram importadas." + salvo
 
     finally:
         if doc is not None:
