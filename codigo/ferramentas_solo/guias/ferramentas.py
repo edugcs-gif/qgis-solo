@@ -33,7 +33,7 @@ def _mesmo_pt(a, b):
 class _BaseGuias(QgsMapTool):
     """Base comum: rubber bands, resolução do snap nas guias, teclas."""
 
-    def __init__(self, iface, acao, medidas=None, intervalo=None):
+    def __init__(self, iface, acao, medidas=None, intervalo=None, meio=None):
         self.iface = iface
         canvas = iface.mapCanvas()
         super().__init__(canvas)
@@ -41,6 +41,7 @@ class _BaseGuias(QgsMapTool):
         self.setCursor(QtC.CrossCursor)
         self.medidas = medidas      # MedidasAoVivo (comprimento/área enquanto desenha)
         self.intervalo = intervalo  # IntervaloDistancia (aderência por passo de distância)
+        self.meio = meio            # AderenciaMeio (ponto médio dos lados)
         self._ult_pt = None         # último ponto resolvido do cursor
         self.guias_ligadas = True
         self.mostrar_45 = True
@@ -142,10 +143,14 @@ class _BaseGuias(QgsMapTool):
         return out
 
     # ---------- bordas das camadas visíveis perto do cursor ----------
-    def segmentos_proximos(self, p, tol, ignorar_seg=None):
-        """Segmentos (a, b, nome_camada) de todas as camadas de linha/polígono
-        visíveis que passam a menos de `tol` do cursor (coordenadas do mapa)."""
-        if not self.intersec_camadas:
+    def _meio_ligado(self):
+        return self.meio is not None and self.meio.ligado
+
+    def segmentos_proximos(self, p, tol, ignorar_seg=None, sempre=False):
+        """Segmentos (a, b, nome_camada, ponto_médio) de todas as camadas de linha/polígono
+        visíveis que passam a menos de `tol` do cursor (coordenadas do mapa). O ponto médio é
+        calculado no SRC da camada (exato mesmo com reprojeção)."""
+        if not self.intersec_camadas and not sempre:
             return []
         canvas = self.canvas()
         crs_mapa = canvas.mapSettings().destinationCrs()
@@ -177,7 +182,8 @@ class _BaseGuias(QgsMapTool):
                             continue
                         if ignorar_seg and ignorar_seg(lyr, f.id(), am, bm):
                             continue
-                        out.append((am, bm, lyr.name()))
+                        meio = ct.transform(QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2))
+                        out.append((am, bm, lyr.name(), meio))
         return out
 
     @staticmethod
@@ -194,9 +200,9 @@ class _BaseGuias(QgsMapTool):
     def resolver(self, p, guias, pontos_extra=(), ignorar_match=None, ignorar_seg=None):
         """Retorna (ponto, rótulo, guias_ativas).
 
-        Prioridade: vértice do snap do QGIS > interseções (guia x guia, guia x borda de
-        qualquer camada visível, borda x borda entre camadas) e pontos extras >
-        projeção numa guia > snap em segmento do QGIS > livre.
+        Prioridade: vértice do snap do QGIS > meio do lado, interseções (guia x guia, guia x
+        borda de qualquer camada visível, borda x borda entre camadas) e pontos extras, o mais
+        perto do cursor > projeção numa guia > snap em segmento do QGIS > livre.
         Segure SHIFT para desenhar livre.
         """
         if QApplication.keyboardModifiers() & QtC.ShiftModifier:
@@ -226,7 +232,13 @@ class _BaseGuias(QgsMapTool):
         for pt, rot in pontos_extra:
             considerar(pt, rot, [])
 
-        segs = self.segmentos_proximos(p, tol, ignorar_seg)
+        meio = self._meio_ligado()
+        proximos = self.segmentos_proximos(p, tol, ignorar_seg, sempre=meio)
+        # meio do lado (ponto médio de cada face das camadas visíveis)
+        if meio:
+            for _a, _b, nome, pm in proximos:
+                considerar(pm, "Meio do lado (%s)" % nome, [])
+        segs = [(a, b, nome) for a, b, nome, _pm in proximos] if self.intersec_camadas else []
         if m is not None and m.isValid() and m.hasEdge():
             a, b = m.edgePoints()
             segs.append((QgsPointXY(a), QgsPointXY(b), m.layer().name() if m.layer() else "borda"))
@@ -266,6 +278,8 @@ class _BaseGuias(QgsMapTool):
         if rotulo:
             if rotulo == "Vértice":
                 self.marcador.setIconType(VM.ICON_BOX)
+            elif rotulo.startswith("Meio"):
+                self.marcador.setIconType(VM.ICON_TRIANGLE)
             elif "×" in rotulo or rotulo.startswith("Ponto"):
                 self.marcador.setIconType(VM.ICON_X)
             else:
@@ -311,6 +325,10 @@ class _BaseGuias(QgsMapTool):
         if k == QtC.Key_M and self.medidas is not None:
             ligado = self.medidas.alternar()
             self._status("Medidas ao vivo (comprimento e área) %s" % ("LIGADAS" if ligado else "DESLIGADAS"))
+            return True
+        if k == QtC.Key_P and self.meio is not None:
+            ligado = self.meio.alternar()
+            self._status("Aderência no meio do lado %s" % ("LIGADA" if ligado else "DESLIGADA"))
             return True
         if k == QtC.Key_D and self.intervalo is not None:
             ligado = self.intervalo.alternar()
@@ -400,8 +418,8 @@ class FerramentaMoverVertice(_BaseGuias):
     TIPOS = (PONTO, LINHA, POLIGONO)
     NOME_TIPOS = "ponto, linha ou polígono"
 
-    def __init__(self, iface, acao, medidas=None, intervalo=None):
-        super().__init__(iface, acao, medidas, intervalo)
+    def __init__(self, iface, acao, medidas=None, intervalo=None, meio=None):
+        super().__init__(iface, acao, medidas, intervalo, meio)
         # linha tracejada da posição original até o cursor (deslocamento de ponto)
         self.rb_desloc = self._rb(LINHA, QColor(200, 0, 170, 200), 1, QtC.DashLine)
         self.sel = None          # dict com a edição em andamento
@@ -415,7 +433,7 @@ class FerramentaMoverVertice(_BaseGuias):
         self._status("Mover vértice/ponto com guias: clique num vértice ou ponto para mover ou num lado para CRIAR vértice (+) · "
                      "Delete apaga · "
                      "Esc/botão direito cancela · SHIFT livre · G guias · 4 45° · I interseção c/ camadas · "
-                     "M medidas · D intervalo")
+                     "M medidas · D intervalo · P meio do lado")
 
     # --- encontrar vértice mais próximo ---
     def _vertice_proximo(self, lyr, p):
@@ -440,7 +458,8 @@ class FerramentaMoverVertice(_BaseGuias):
 
     def _segmento_proximo(self, lyr, p):
         """Ponto mais próximo num lado de feição da camada (para criar vértice).
-        Perto do meio do lado, gruda no ponto médio."""
+        Com a aderência no meio do lado ligada, perto do meio gruda no ponto médio.
+        Devolve (dist, fid, índice, geometria, ponto, no_meio)."""
         tol = self._tol()
         ret_map = QgsRectangle(p.x() - tol, p.y() - tol, p.x() + tol, p.y() + tol)
         ret_lyr = self.toLayerCoordinates(lyr, ret_map)
@@ -457,12 +476,13 @@ class FerramentaMoverVertice(_BaseGuias):
             qm = self.toMapCoordinates(lyr, QgsPointXY(q))
             d = _dist(qm, p)
             if d <= tol and (melhor is None or d < melhor[0]):
-                a = self.toMapCoordinates(lyr, QgsPointXY(g.vertexAt(depois - 1)))
-                b = self.toMapCoordinates(lyr, QgsPointXY(g.vertexAt(depois)))
-                meio = QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
-                if _dist(meio, p) <= tol:
-                    qm = meio
-                melhor = (d, f.id(), depois, QgsGeometry(g), qm)
+                no_meio = False
+                if self._meio_ligado():
+                    a, b = g.vertexAt(depois - 1), g.vertexAt(depois)
+                    meio = self.toMapCoordinates(lyr, QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2))
+                    if _dist(meio, p) <= tol:
+                        qm, no_meio = meio, True
+                melhor = (d, f.id(), depois, QgsGeometry(g), qm, no_meio)
         return melhor
 
     def _inserir_na_geom(self, lyr, g, depois, pm):
@@ -529,10 +549,11 @@ class FerramentaMoverVertice(_BaseGuias):
                 self.marcador.show()
                 self._mostrar_tip(None, None)
             elif sg:
-                self.marcador.setIconType(VM.ICON_CROSS)
+                self.marcador.setIconType(VM.ICON_TRIANGLE if sg[5] else VM.ICON_CROSS)
                 self.marcador.setCenter(sg[4])
                 self.marcador.show()
-                self._mostrar_tip("Criar vértice", pos_evento(e))
+                self._mostrar_tip("Criar vértice no meio do lado" if sg[5] else "Criar vértice",
+                                  pos_evento(e))
             else:
                 self.marcador.hide()
                 self._mostrar_tip(None, None)
@@ -627,7 +648,7 @@ class FerramentaMoverVertice(_BaseGuias):
                 sg = None if lyr.geometryType() == PONTO else self._segmento_proximo(lyr, e.mapPoint())
                 if not sg:
                     return
-                _d, fid, idx, geom0, vm = sg
+                _d, fid, idx, geom0, vm, _no_meio = sg
                 geom = self._inserir_na_geom(lyr, geom0, idx, vm)
                 if geom is None:
                     return
@@ -747,8 +768,8 @@ class FerramentaDesenhar(_BaseGuias):
     """Desenha linha/polígono novo com guias de continuação, 90° e 45°
     em relação ao último lado (e ao primeiro lado, para fechar polígonos)."""
 
-    def __init__(self, iface, acao, medidas=None, intervalo=None):
-        super().__init__(iface, acao, medidas, intervalo)
+    def __init__(self, iface, acao, medidas=None, intervalo=None, meio=None):
+        super().__init__(iface, acao, medidas, intervalo, meio)
         self.pts = []
         self.ref = (1.0, 0.0)
         self.tipo = LINHA
@@ -757,7 +778,7 @@ class FerramentaDesenhar(_BaseGuias):
         super().activate()
         self._status("Desenhar com guias: clique esquerdo adiciona · direito/Enter finaliza · "
                      "Backspace desfaz ponto · Esc cancela · SHIFT livre · G guias · 4 45° · I interseção c/ camadas · "
-                     "M medidas · D intervalo")
+                     "M medidas · D intervalo · P meio do lado")
 
     def _guias(self):
         if not self.pts:
@@ -778,9 +799,14 @@ class FerramentaDesenhar(_BaseGuias):
         return self.filtrar(gs)
 
     def _extras(self):
+        ex = []
         if self.tipo == POLIGONO and len(self.pts) >= 3:
-            return [(self.pts[0], "Ponto inicial")]
-        return []
+            ex.append((self.pts[0], "Ponto inicial"))
+        if self._meio_ligado():
+            # meio dos lados já desenhados da feição nova (o lado até o cursor ainda muda)
+            for a, b in zip(self.pts, self.pts[1:]):
+                ex.append((QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2), "Meio do lado (desenho)"))
+        return ex
 
     def _resolver_desenho(self, p, guias):
         """Ponto do cursor com guias e, se ligado, o intervalo de distância a partir do último ponto."""

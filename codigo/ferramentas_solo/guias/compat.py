@@ -27,7 +27,7 @@ for _nome, _esc in [
     ("SolidLine", "PenStyle"), ("LeftButton", "MouseButton"), ("RightButton", "MouseButton"),
     ("ShiftModifier", "KeyboardModifier"), ("Key_4", "Key"), ("Key_Backspace", "Key"),
     ("Key_Delete", "Key"), ("Key_Enter", "Key"), ("Key_Escape", "Key"), ("Key_G", "Key"),
-    ("Key_D", "Key"), ("Key_I", "Key"), ("Key_M", "Key"), ("Key_Return", "Key"),
+    ("Key_D", "Key"), ("Key_I", "Key"), ("Key_M", "Key"), ("Key_P", "Key"), ("Key_Return", "Key"),
     ("RoundJoin", "PenJoinStyle"), ("AlignLeft", "AlignmentFlag"),
 ]:
     setattr(QtC, _nome, _pegar(Qt, _esc + "." + _nome, _nome))
@@ -38,7 +38,7 @@ AA = _pegar(_QPainter, "RenderHint.Antialiasing", "Antialiasing")
 TEXT_AA = _pegar(_QPainter, "RenderHint.TextAntialiasing", "TextAntialiasing")
 
 VM = _NS()
-for _nome in ("ICON_BOX", "ICON_CIRCLE", "ICON_CROSS", "ICON_X"):
+for _nome in ("ICON_BOX", "ICON_CIRCLE", "ICON_CROSS", "ICON_TRIANGLE", "ICON_X"):
     setattr(VM, _nome, _pegar(QgsVertexMarker, "IconType." + _nome, _nome))
 
 NIVEL_INFO = _pegar(Qgis, "MessageLevel.Info", "Info")

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- lado da feição -->
+  <path d="M2.5 19 L21.5 5" fill="none" stroke="#1f5fbf" stroke-width="2" stroke-linecap="round"/>
+  <rect x="0.8" y="17.3" width="3.4" height="3.4" fill="#1f5fbf"/>
+  <rect x="19.8" y="3.3" width="3.4" height="3.4" fill="#1f5fbf"/>
+  <!-- ponto médio (triângulo, como no CAD) -->
+  <path d="M12 6.6 L16.6 14.6 H7.4 Z" fill="none" stroke="#e600c8" stroke-width="1.9" stroke-linejoin="round"/>
+</svg>
