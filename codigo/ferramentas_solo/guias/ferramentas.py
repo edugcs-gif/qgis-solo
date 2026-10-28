@@ -221,23 +221,23 @@ class _BaseGuias(QgsMapTool):
             if pt is None:
                 return
             d = _dist(pt, p)
-            if d <= tol and (melhor[0] is None or d < melhor[0][0]):
+            if d <= tol and (melhor[0] is None or d < melhor[0][0] - 1e-9 * max(1.0, tol)):
                 melhor[0] = (d, pt, rotulo, gs)
 
-        # guia x guia
-        for i in range(len(guias)):
-            for j in range(i + 1, len(guias)):
-                g1, g2 = guias[i], guias[j]
-                considerar(intersecao(g1, g2), "%s × %s" % (g1.rotulo, g2.rotulo), [g1, g2])
+        # pontos extras e meio do lado primeiro: num empate (mesmo ponto) fica o nome deles
         for pt, rot in pontos_extra:
             considerar(pt, rot, [])
-
         meio = self._meio_ligado()
         proximos = self.segmentos_proximos(p, tol, ignorar_seg, sempre=meio)
         # meio do lado (ponto médio de cada face das camadas visíveis)
         if meio:
             for _a, _b, nome, pm in proximos:
                 considerar(pm, "Meio do lado (%s)" % nome, [])
+        # guia x guia
+        for i in range(len(guias)):
+            for j in range(i + 1, len(guias)):
+                g1, g2 = guias[i], guias[j]
+                considerar(intersecao(g1, g2), "%s × %s" % (g1.rotulo, g2.rotulo), [g1, g2])
         segs = [(a, b, nome) for a, b, nome, _pm in proximos] if self.intersec_camadas else []
         if m is not None and m.isValid() and m.hasEdge():
             a, b = m.edgePoints()
@@ -427,6 +427,7 @@ class FerramentaMoverVertice(_BaseGuias):
         self.hover_seg = None    # (camada, ponto no segmento) sob o cursor -> criar vértice
         self.pos_press = None
         self.pegou_no_press = False
+        self.marcas_meio = []    # triângulos no meio dos lados ORIGINAIS do vértice em edição
 
     def activate(self):
         super().activate()
@@ -501,11 +502,53 @@ class FerramentaMoverVertice(_BaseGuias):
         return g2
 
     def _itens(self):
-        return super()._itens() + [self.rb_desloc]
+        return super()._itens() + [self.rb_desloc] + self.marcas_meio
 
     def limpar_visual(self):
         super().limpar_visual()
         self.rb_desloc.reset(LINHA)
+        self._limpar_marcas_meio()
+
+    # --- meio dos lados como estavam ANTES da edição ---
+    def _meios_originais(self, lyr, geom, idx, novo):
+        """Ponto médio de cada lado do vértice na posição de antes da edição (no SRC do mapa).
+        Os lados mudam enquanto o vértice anda; estes pontos ficam guardados, para dar para
+        levar o vértice, por exemplo, ao meio do lado em que ele estava."""
+        if lyr.geometryType() == PONTO:
+            return []
+
+        def meio(i, j):
+            a, b = geom.vertexAt(i), geom.vertexAt(j)
+            return self.toMapCoordinates(lyr, QgsPointXY((a.x() + b.x()) / 2, (a.y() + b.y()) / 2))
+
+        ant, prox = geom.adjacentVertices(idx)
+        if novo:
+            # vértice criado agora: o lado original é o que ele dividiu (vizinho anterior -> próximo)
+            return [(meio(ant, prox), "Meio do lado original")] if ant >= 0 and prox >= 0 else []
+        return [(meio(idx, n), "Meio do lado original " + nome)
+                for n, nome in ((ant, "A"), (prox, "B")) if n >= 0]
+
+    def _mostrar_marcas_meio(self):
+        self._limpar_marcas_meio()
+        if self.sel is None or not self._meio_ligado():
+            return
+        for pt, _rot in self.sel.get("meios_orig", []):
+            mk = QgsVertexMarker(self.canvas())
+            mk.setIconType(VM.ICON_TRIANGLE)
+            mk.setColor(QColor(200, 0, 170, 160))
+            mk.setIconSize(9)
+            mk.setPenWidth(1)
+            mk.setCenter(pt)
+            self.marcas_meio.append(mk)
+
+    def _limpar_marcas_meio(self):
+        cena = self.canvas().scene()
+        for mk in self.marcas_meio:
+            try:
+                cena.removeItem(mk)
+            except Exception:
+                pass
+        self.marcas_meio = []
 
     def _montar_guias(self, lyr, g, idx):
         def P(i):
@@ -582,7 +625,8 @@ class FerramentaMoverVertice(_BaseGuias):
             return (lyr == s["lyr"] and fid == s["fid"] and
                     (_dist(a, orig) < 1e-9 or _dist(b, orig) < 1e-9))
 
-        pt, rot, ativas = self.resolver(p, s["guias"], ignorar_match=ignorar, ignorar_seg=ignorar_seg)
+        extras = s.get("meios_orig", []) if self._meio_ligado() else []
+        pt, rot, ativas = self.resolver(p, s["guias"], extras, ignorar_match=ignorar, ignorar_seg=ignorar_seg)
         if self._pode_passo(rot, ativas):
             # na guia: o lado daquela guia (a guia nasce no vértice vizinho); livre: o lado anterior
             ancora, guia = (ativas[0].o, ativas[0]) if ativas else (s["ancora"], None)
@@ -663,7 +707,8 @@ class FerramentaMoverVertice(_BaseGuias):
                 if viz >= 0:
                     ancora = self.toMapCoordinates(lyr, QgsPointXY(geom.vertexAt(viz)))
             self.sel = dict(lyr=lyr, fid=fid, idx=idx, geom=geom, orig=vm, guias=guias, novo=novo,
-                            ancora=ancora)
+                            ancora=ancora, meios_orig=self._meios_originais(lyr, geom, idx, novo))
+            self._mostrar_marcas_meio()
             self.rb_prev.reset(lyr.geometryType())
             # setColor muda contorno E preenchimento: primeiro ele, depois o preenchimento transparente
             self.rb_prev.setColor(QColor(0, 120, 255, 230))
@@ -756,6 +801,7 @@ class FerramentaMoverVertice(_BaseGuias):
             if self.sel is not None:
                 lyr, g, idx = self.sel["lyr"], self.sel["geom"], self.sel["idx"]
                 self.sel["guias"], _ = self._montar_guias(lyr, g, idx)
+                self._mostrar_marcas_meio()      # tecla P mostra/esconde os meios originais
                 if self._ult_pt is not None:
                     self._medir(self._previa(self._ult_pt), self._ult_pt)
             e.accept()
