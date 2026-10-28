@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- tabela de atributos -->
+  <rect x="2" y="3" width="15" height="15" rx="1.5" fill="#ffffff" stroke="#1f5fbf" stroke-width="1.6"/>
+  <path d="M2 7.5 H17 M2 12 H17 M7.5 3 V18" stroke="#1f5fbf" stroke-width="1.2"/>
+  <!-- lápis -->
+  <path d="M12.5 20.5 L13.3 17 L20.2 10.1 L22.9 12.8 L16 19.7 Z" fill="#e8710a" stroke="#8a3d00" stroke-width="0.9" stroke-linejoin="round"/>
+  <path d="M12.5 20.5 L13.3 17 L16 19.7 Z" fill="#ffd9b0"/>
+</svg>

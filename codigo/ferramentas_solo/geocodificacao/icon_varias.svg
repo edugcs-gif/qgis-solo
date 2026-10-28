@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- três camadas empilhadas -->
+  <path d="M2 16.5 L10 20.5 L18 16.5 L10 12.5 Z" fill="#9fc3ef" stroke="#1f5fbf" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M2 12 L10 16 L18 12 L10 8 Z" fill="#c4dbf6" stroke="#1f5fbf" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M2 7.5 L10 11.5 L18 7.5 L10 3.5 Z" fill="#e6f0fb" stroke="#1f5fbf" stroke-width="1.2" stroke-linejoin="round"/>
+  <!-- ε da expressão -->
+  <circle cx="18.5" cy="18" r="5" fill="#e8710a"/>
+  <text x="18.5" y="21" font-family="Arial" font-size="8.5" font-weight="bold" fill="#ffffff" text-anchor="middle">ε</text>
+</svg>
