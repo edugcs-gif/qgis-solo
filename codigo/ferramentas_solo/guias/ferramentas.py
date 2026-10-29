@@ -8,7 +8,7 @@ from qgis.PyQt.QtWidgets import QApplication, QToolTip
 from qgis.core import (
     Qgis, QgsCoordinateTransform, QgsEditFormConfig, QgsFeatureRequest, QgsProject, QgsGeometry, QgsPoint, QgsPointXY,
     QgsExpression, QgsExpressionContext, QgsExpressionContextUtils, QgsRectangle, QgsSettings,
-    QgsUnitTypes, QgsVectorLayer, QgsVectorLayerUtils, QgsWkbTypes,
+    QgsUnitTypes, QgsVectorLayer, QgsVectorLayerUtils, QgsVertexId, QgsWkbTypes,
 )
 from qgis.gui import QgsAttributeEditorContext, QgsMapTool, QgsRubberBand, QgsVertexMarker
 
@@ -19,6 +19,7 @@ from .guias import (dist_ponto_segmento, guias_angulares, intersecao, intersecao
 from ..medidas.ao_vivo import aneis_da_geometria
 
 TOL_PX = 12            # tolerância de captura das guias (pixels)
+SOLTA_PRE_PX = 10      # mexer o mouse mais que isso solta o vértice pré-selecionado (pixels)
 MOSTRAR_FRACAS_PX = 70  # guias secundárias só aparecem com o cursor a menos disso (pixels)
 
 
@@ -437,6 +438,7 @@ class FerramentaMoverVertice(_BaseGuias):
         self._hover_lyr = None
         self._hover_pos = None
         self._nomes = {}         # cache do nome de exibição das feições
+        self.pre = None          # vértice pré-selecionado depois de apagar (Delete de novo apaga ele)
 
     def activate(self):
         super().activate()
@@ -681,6 +683,11 @@ class FerramentaMoverVertice(_BaseGuias):
     def canvasMoveEvent(self, e):
         p = e.mapPoint()
         if self.sel is None:
+            if self.pre is not None:
+                pos = pos_evento(e)
+                if self.pre["pos"] is not None and (pos - self.pre["pos"]).manhattanLength() <= SOLTA_PRE_PX:
+                    return            # continua o próximo vértice pré-selecionado
+                self.pre = None
             lyr = self.camada_editavel(avisar=False)
             self._hover_lyr = lyr
             self._hover_pos = pos_evento(e)
@@ -767,6 +774,7 @@ class FerramentaMoverVertice(_BaseGuias):
         if e.button() != QtC.LeftButton:
             return
         if self.sel is None:
+            self.pre = None           # o clique vale para o que está sob o cursor
             lyr = self.camada_editavel()
             if not lyr:
                 return
@@ -841,6 +849,7 @@ class FerramentaMoverVertice(_BaseGuias):
     def cancelar(self):
         self.sel = None
         self.pegou_no_press = False
+        self.pre = None
         self.cands = []          # a geometria pode ter mudado: o próximo movimento do mouse refaz
         self.sob_cursor = set()
         self.hover = self.hover_seg = None
@@ -854,7 +863,16 @@ class FerramentaMoverVertice(_BaseGuias):
         if self.sel is not None:
             lyr, fid, idx, g = self.sel["lyr"], self.sel["fid"], self.sel["idx"], self.sel["geom"]
         elif self.hover is not None:
-            lyr, (_d, fid, idx, g, _vm) = self.hover
+            lyr, (_d, fid, idx, g, vm) = self.hover
+            # a feição pode ter mudado desde que o mouse passou (ex.: Ctrl+Z): usa a geometria atual
+            atual = lyr.getFeature(fid).geometry() if lyr.isEditable() else None
+            if atual is None or atual.isEmpty() or idx >= atual.constGet().nCoordinates() or \
+                    _dist(self.toMapCoordinates(lyr, QgsPointXY(atual.vertexAt(idx))), vm) > 1e-9:
+                self.cancelar()
+                self.hover = None
+                self._status("A feição mudou: passe o mouse no vértice de novo.")
+                return True
+            g = atual
         else:
             return False
         if not lyr.isEditable():
@@ -870,7 +888,8 @@ class FerramentaMoverVertice(_BaseGuias):
                 self._msg("Não dá para apagar: a feição ficaria com vértices de menos.", NIVEL_AVISO)
             return True
         lyr.beginEditCommand("Apagar vértice (Guias CAD)")
-        if lyr.changeGeometry(fid, g2):
+        apagou = lyr.changeGeometry(fid, g2)
+        if apagou:
             lyr.endEditCommand()
         else:
             lyr.destroyEditCommand()
@@ -878,7 +897,59 @@ class FerramentaMoverVertice(_BaseGuias):
         lyr.triggerRepaint()
         self.cancelar()
         self.hover = None
+        if apagou:
+            prox = self._proximo_vertice(lyr, g, g2, idx)
+            if prox >= 0:
+                self._pre_selecionar(lyr, fid, prox)
         return True
+
+    def _proximo_vertice(self, lyr, g_antes, g_depois, idx):
+        """Índice, na geometria nova, do vértice que vinha depois do apagado no mesmo anel
+        (no fim do anel volta ao começo; no fim de uma linha fica o último)."""
+        ok, vid = g_antes.vertexIdFromVertexNr(idx)
+        if not ok:
+            return -1
+        a = g_depois.constGet()
+        parte, anel, v = vid.part, vid.ring, vid.vertex
+        if parte >= a.partCount():          # multiponto: o último ponto foi apagado
+            parte, anel, v = 0, 0, 0
+        n = a.vertexCount(parte, anel)
+        uteis = n - 1 if lyr.geometryType() == POLIGONO else n   # anel: o último repete o 1º
+        if uteis <= 0:
+            return -1
+        if lyr.geometryType() == POLIGONO:
+            v = v if v < uteis else 0
+        else:
+            v = min(v, uteis - 1)
+        return a.vertexNumberFromVertexId(QgsVertexId(parte, anel, v))
+
+    def _pre_selecionar(self, lyr, fid, idx):
+        """Deixa o vértice destacado como se o mouse estivesse nele: Delete apaga, e assim por diante."""
+        g = lyr.getFeature(fid).geometry()
+        if g is None or g.isEmpty():
+            return
+        pt = self.toMapCoordinates(lyr, QgsPointXY(g.vertexAt(idx)))
+        self.pre = dict(lyr=lyr, fid=fid, idx=idx, pos=self._hover_pos)
+        self._hover_lyr = lyr
+        self.hover = (lyr, (0.0, fid, idx, QgsGeometry(g), pt))
+        self.hover_seg = None
+        self.rb_hover.reset(lyr.geometryType())
+        self.rb_hover.setColor(QColor(255, 160, 0, 235))
+        if lyr.geometryType() == POLIGONO:
+            self.rb_hover.setFillColor(QColor(255, 160, 0, 45))
+        elif lyr.geometryType() == PONTO:
+            self.rb_hover.setIcon(RB_CIRCULO)
+            self.rb_hover.setIconSize(16)
+        self.rb_hover.setToGeometry(g, lyr)
+        self.marcador.setIconType(VM.ICON_BOX)
+        self.marcador.setCenter(pt)
+        self.marcador.show()
+        texto = "Próximo vértice · %s · Delete apaga" % self._nome_feicao(lyr, fid)
+        self._tip = None
+        px = self.toCanvasCoordinates(pt)
+        self._mostrar_tip(texto, px)
+        self._status("Vértice apagado. O próximo do mesmo polígono está pré-selecionado: Delete apaga "
+                     "ele também; mexer o mouse solta.")
 
     def keyPressEvent(self, e):
         if e.key() in (QtC.Key_Up, QtC.Key_Down):
