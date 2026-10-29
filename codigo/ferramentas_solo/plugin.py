@@ -42,6 +42,7 @@ ANTIGOS = {
     "preencher_campo": "Preencher Campo",
     "selecao_sobreposicao": "Seleção por Sobreposição",
     "atualizador_geocodificacao": "Atualizador Geocodificação",
+    "numerar_lotes": "Numerar Lotes",
 }
 
 # complementos extras da barra, na ordem dos botões: (módulo, classe, separador antes)
@@ -49,6 +50,7 @@ EXTRAS = (
     ("preencher.plugin", "PreencherCampoPlugin", True),
     ("sobreposicao.plugin", "SelecaoSobreposicao", False),
     ("geocodificacao.plugin", "AtualizadorGeocodificacao", False),
+    ("numerar.plugin", "NumerarLotesPlugin", False),
     ("dxf.plugin", "ImportarExportarDXF", True),
     ("relatorio.plugin", "RelatorioProducaoPlugin", True),
 )
