@@ -43,6 +43,7 @@ for _nome in ("ICON_BOX", "ICON_CIRCLE", "ICON_CROSS", "ICON_TRIANGLE", "ICON_X"
     setattr(VM, _nome, _pegar(QgsVertexMarker, "IconType." + _nome, _nome))
 
 RB_CIRCULO = _pegar(QgsRubberBand, "IconType.ICON_CIRCLE", "ICON_CIRCLE")
+RB_CAIXA = _pegar(QgsRubberBand, "IconType.ICON_FULL_BOX", "ICON_FULL_BOX")
 NIVEL_INFO = _pegar(Qgis, "MessageLevel.Info", "Info")
 NIVEL_AVISO = _pegar(Qgis, "MessageLevel.Warning", "Warning")
 PONTO = _pegar(Qgis, "GeometryType.Point") if hasattr(Qgis, "GeometryType") else QgsWkbTypes.PointGeometry

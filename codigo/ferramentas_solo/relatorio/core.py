@@ -4,6 +4,8 @@ import datetime as dt
 from collections import defaultdict
 
 SEM_USUARIO = "(sem usuário)"
+SEM_VALOR = "(vazio)"
+SEM_DATA = "(sem data)"
 
 MESES = ["jan", "fev", "mar", "abr", "mai", "jun",
          "jul", "ago", "set", "out", "nov", "dez"]
@@ -37,10 +39,13 @@ def chave_periodo(d, modo):
     return (d.isoformat(), d.strftime("%d/%m/%Y"))
 
 
-def agregar(registros, modo="dia", camadas=None):
+def agregar(registros, modo="dia", camadas=None, ordem_valores=None):
     """
-    registros: iterável de (camada, usuario, date|None)
-    Retorna dict com resumo por usuário e matriz usuário x período.
+    registros: iterável de (camada, usuario, date|None) ou (camada, usuario, date|None, valor),
+    onde valor é o texto do "campo do valor" já como aparece no QGIS (ex.: nome do mapa de valores).
+    ordem_valores: ordem preferida das colunas de valor (ex.: a ordem do mapa de valores).
+    Retorna dict com resumo por usuário e matriz usuário x período; com valor, também as
+    contagens por usuário x valor e por usuário x período x valor.
     """
     camadas = list(camadas or [])
     por_camada = defaultdict(lambda: defaultdict(int))   # user -> camada -> n
@@ -50,8 +55,13 @@ def agregar(registros, modo="dia", camadas=None):
     rotulos = {}
     sem_data = defaultdict(int)
     total = 0
+    com_valor = False
+    valor_usuario = defaultdict(lambda: defaultdict(int))   # user -> valor -> n
+    valor_periodo = defaultdict(lambda: defaultdict(int))   # (user, chave) -> valor -> n
+    vistos = []
 
-    for camada, user, d in registros:
+    for reg in registros:
+        camada, user, d = reg[0], reg[1], reg[2]
         user = str(user).strip() if user not in (None, "") else SEM_USUARIO
         if not user:
             user = SEM_USUARIO
@@ -59,6 +69,14 @@ def agregar(registros, modo="dia", camadas=None):
             camadas.append(camada)
         por_camada[user][camada] += 1
         total += 1
+        if len(reg) > 3:
+            com_valor = True
+            valor = SEM_VALOR if reg[3] in (None, "") else str(reg[3])
+            if valor not in vistos:
+                vistos.append(valor)
+            valor_usuario[user][valor] += 1
+            chave = chave_periodo(d, modo)[0] if d is not None else "~"     # "~": sem data por último
+            valor_periodo[(user, chave)][valor] += 1
         if d is None:
             sem_data[user] += 1
             continue
@@ -101,7 +119,30 @@ def agregar(registros, modo="dia", camadas=None):
     for s in dias.values():
         todos_dias |= s
 
-    return {
+    extra = {}
+    if com_valor:
+        ordem = [v for v in (ordem_valores or []) if v in vistos]
+        ordem += sorted((v for v in vistos if v not in ordem and v != SEM_VALOR), key=lambda v: v.lower())
+        if SEM_VALOR in vistos:
+            ordem.append(SEM_VALOR)
+        linhas_u = []
+        for u in usuarios:
+            vals = [valor_usuario[u].get(v, 0) for v in ordem]
+            linhas_u.append({"usuario": u, "valores": vals, "total": sum(vals)})
+        linhas_p = []
+        for u in usuarios:
+            for chave in sorted(k for (uu, k) in valor_periodo if uu == u):
+                vals = [valor_periodo[(u, chave)].get(v, 0) for v in ordem]
+                linhas_p.append({"usuario": u, "periodo": SEM_DATA if chave == "~" else rotulos[chave],
+                                 "valores": vals, "total": sum(vals)})
+        extra = {
+            "valores": ordem,
+            "valor_usuario": linhas_u,
+            "valor_periodo": linhas_p,
+            "totais_valor": [sum(l["valores"][i] for l in linhas_u) for i in range(len(ordem))],
+        }
+
+    return dict(extra, **{
         "camadas": camadas,
         "usuarios": usuarios,
         "resumo": resumo,
@@ -113,4 +154,4 @@ def agregar(registros, modo="dia", camadas=None):
         "sem_data": sum(sem_data.values()),
         "dias_com_producao": len(todos_dias),
         "media_geral_dia": ((total - sum(sem_data.values())) / len(todos_dias)) if todos_dias else 0.0,
-    }
+    })

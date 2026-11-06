@@ -10,13 +10,14 @@ from qgis.PyQt.QtWidgets import (
     QTableWidget, QTableWidgetItem, QLabel, QFileDialog, QMessageBox, QHeaderView,
     QApplication, QAbstractItemView,
 )
-from qgis.core import QgsProject, QgsVectorLayer, QgsFeatureRequest, QgsSettings
+from qgis.core import QgsApplication, QgsProject, QgsVectorLayer, QgsFeatureRequest, QgsSettings
 
-from .core import agregar, parse_texto_data
+from .core import SEM_VALOR, agregar, parse_texto_data
 from . import exportar
 
 PASTA = os.path.dirname(__file__)
 CHAVE = "relatorio_producao/"
+NENHUM = "(nenhum)"
 
 
 def para_data(v):
@@ -41,6 +42,55 @@ def para_data(v):
     except AttributeError:
         pass
     return parse_texto_data(v)
+
+
+class Representar:
+    """Texto do valor como aparece no QGIS (ex.: o nome do mapa de valores), com cache."""
+
+    def __init__(self, lyr, idx):
+        self.lyr, self.idx, self.cache = lyr, idx, {}
+        setup = lyr.editorWidgetSetup(idx)
+        self.tipo, self.cfg = setup.type(), setup.config()
+        self.fmt = QgsApplication.fieldFormatterRegistry().fieldFormatter(self.tipo)   # sem widget: o padrão
+        try:
+            self.fmt_cache = self.fmt.createCache(lyr, idx, self.cfg)
+        except Exception:
+            self.fmt_cache = None
+
+    def __call__(self, v):
+        if _nulo(v) or str(v).strip() == "":
+            return None
+        chave = str(v)
+        if chave not in self.cache:
+            try:
+                txt = self.fmt.representValue(self.lyr, self.idx, self.cfg, self.fmt_cache, v)
+            except Exception:
+                txt = chave
+            self.cache[chave] = txt if txt not in (None, "") else chave
+        return self.cache[chave]
+
+    def ordem(self):
+        """Ordem das descrições do mapa de valores (para as colunas saírem na mesma ordem)."""
+        if self.tipo != "ValueMap":
+            return []
+        mapa = self.cfg.get("map", [])
+        if isinstance(mapa, dict):
+            return list(mapa.keys())
+        out = []
+        for item in mapa:
+            for desc, valor in dict(item).items():
+                if not str(valor).startswith("{2839923C"):      # a entrada NULL do QGIS fica de fora
+                    out.append(str(desc))
+        return out
+
+
+def _nulo(v):
+    if v is None:
+        return True
+    try:
+        return v.isNull()
+    except AttributeError:
+        return False
 
 
 def para_usuario(v):
@@ -86,6 +136,15 @@ class DialogoRelatorio(QDialog):
         self.cb_data = QComboBox(); self.cb_data.setEditable(True)
         f.addRow("Campo usuário:", self.cb_user)
         f.addRow("Campo data:", self.cb_data)
+        self.cb_valor = QComboBox()
+        self.cb_valor.setToolTip("Opcional: conta, para cada usuário e período, quantas feições ficaram com "
+                                 "cada valor deste campo (com os nomes do mapa de valores, se houver)")
+        f.addRow("Campo do valor:", self.cb_valor)
+        self.chk_preenchido = QCheckBox("Contar só as feições com esse campo preenchido")
+        self.chk_preenchido.setChecked(self.s.value(CHAVE + "so_preenchido", True, type=bool))
+        f.addRow("", self.chk_preenchido)
+        self.cb_valor.currentIndexChanged.connect(
+            lambda _i: self.chk_preenchido.setEnabled(self.cb_valor.currentText() != NENHUM))
 
         self.chk_periodo = QCheckBox("Filtrar período")
         self.chk_periodo.setChecked(self.s.value(CHAVE + "filtrar", False, type=bool))
@@ -121,6 +180,8 @@ class DialogoRelatorio(QDialog):
         self.tb_periodo = self._tabela()
         self.abas.addTab(self.tb_resumo, "Resumo por usuário")
         self.abas.addTab(self.tb_periodo, "Por período")
+        self.tb_valor = self._tabela()             # abas do campo do valor (só aparecem quando usado)
+        self.tb_valor_periodo = self._tabela()
         lay.addWidget(self.abas, 1)
 
         rod = QHBoxLayout()
@@ -189,6 +250,14 @@ class DialogoRelatorio(QDialog):
             else:
                 cb.setEditText(atual)
             cb.blockSignals(False)
+        atual = self.cb_valor.currentText() or self.s.value(CHAVE + "campo_valor", NENHUM)
+        self.cb_valor.blockSignals(True)
+        self.cb_valor.clear()
+        self.cb_valor.addItem(NENHUM)
+        self.cb_valor.addItems(nomes)
+        self.cb_valor.setCurrentIndex(max(0, self.cb_valor.findText(atual)))
+        self.cb_valor.blockSignals(False)
+        self.chk_preenchido.setEnabled(self.cb_valor.currentText() != NENHUM)
 
     # ---------- processamento ----------
     def gerar(self):
@@ -198,12 +267,16 @@ class DialogoRelatorio(QDialog):
             return
         c_user = self.cb_user.currentText().strip()
         c_data = self.cb_data.currentText().strip()
-        faltando = [l.name() for l in camadas
-                    if l.fields().indexOf(c_user) < 0 or l.fields().indexOf(c_data) < 0]
+        c_valor = self.cb_valor.currentText().strip()
+        c_valor = "" if c_valor == NENHUM else c_valor
+        campos = [c_user, c_data] + ([c_valor] if c_valor else [])
+        faltando = [l.name() for l in camadas if any(l.fields().indexOf(c) < 0 for c in campos)]
         if faltando:
             QMessageBox.warning(self, "Relatório",
-                                "Campo '%s' ou '%s' não existe em:\n- %s" % (c_user, c_data, "\n- ".join(faltando)))
+                                "Campo %s não existe em:\n- %s" % (" ou ".join("'%s'" % c for c in campos),
+                                                                    "\n- ".join(faltando)))
             return
+        so_preenchido = bool(c_valor) and self.chk_preenchido.isChecked()
 
         filtrar = self.chk_periodo.isChecked()
         d_ini, d_fim = self.de.date().toPyDate(), self.ate.date().toPyDate()
@@ -219,27 +292,43 @@ class DialogoRelatorio(QDialog):
         self.s.setValue(CHAVE + "campo_data", c_data)
         self.s.setValue(CHAVE + "filtrar", filtrar)
         self.s.setValue(CHAVE + "agrup", modo)
+        self.s.setValue(CHAVE + "campo_valor", c_valor or NENHUM)
+        self.s.setValue(CHAVE + "so_preenchido", self.chk_preenchido.isChecked())
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             registros = []
             fora = 0
+            sem_valor = 0
+            ordem = []
             for lyr in camadas:
                 req = QgsFeatureRequest()
                 try:
                     req.setFlags(QgsFeatureRequest.NoGeometry)
                 except Exception:
                     pass
-                req.setSubsetOfAttributes([c_user, c_data], lyr.fields())
+                req.setSubsetOfAttributes(campos, lyr.fields())
                 it = lyr.getSelectedFeatures(req) if so_sel else lyr.getFeatures(req)
                 i_u, i_d = lyr.fields().indexOf(c_user), lyr.fields().indexOf(c_data)
+                rep = None
+                if c_valor:
+                    i_v = lyr.fields().indexOf(c_valor)
+                    rep = Representar(lyr, i_v)
+                    ordem += [o for o in rep.ordem() if o not in ordem]
                 for ft in it:
                     d = para_data(ft.attribute(i_d))
                     if filtrar and (d is None or d < d_ini or d > d_fim):
                         fora += 1
                         continue
-                    registros.append((lyr.name(), para_usuario(ft.attribute(i_u)), d))
-            self.res = agregar(registros, modo, [l.name() for l in camadas])
+                    if rep is None:
+                        registros.append((lyr.name(), para_usuario(ft.attribute(i_u)), d))
+                        continue
+                    valor = rep(ft.attribute(i_v))
+                    if valor is None and so_preenchido:
+                        sem_valor += 1
+                        continue
+                    registros.append((lyr.name(), para_usuario(ft.attribute(i_u)), d, valor))
+            self.res = agregar(registros, modo, [l.name() for l in camadas], ordem)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -250,6 +339,9 @@ class DialogoRelatorio(QDialog):
             "Campos: usuário = %s | data = %s" % (c_user, c_data),
             "Período: " + ("%s a %s" % (d_ini.strftime("%d/%m/%Y"), d_fim.strftime("%d/%m/%Y")) if filtrar else "todos"),
             "Agrupamento: " + self.cb_agrup.currentText() + (" | apenas selecionadas" if so_sel else ""),
+        ] + ([
+            "Campo do valor: %s%s" % (c_valor, " (só feições com o campo preenchido)" if so_preenchido else ""),
+        ] if c_valor else []) + [
             "Gerado em: " + dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
         ]
         txt = ("<b>Total produzido:</b> %d &nbsp;|&nbsp; <b>Usuários:</b> %d &nbsp;|&nbsp; "
@@ -259,6 +351,8 @@ class DialogoRelatorio(QDialog):
             txt += " &nbsp;|&nbsp; <span style='color:#b00'>%d sem data</span>" % r["sem_data"]
         if filtrar and fora:
             txt += " &nbsp;|&nbsp; %d fora do período" % fora
+        if c_valor and so_preenchido and sem_valor:
+            txt += " &nbsp;|&nbsp; %d sem '%s' preenchido (não contadas)" % (sem_valor, c_valor)
         self.lbl.setText(txt)
         for b in (self.bt_copiar, self.bt_exportar):
             b.setEnabled(r["total"] > 0)
@@ -273,7 +367,7 @@ class DialogoRelatorio(QDialog):
             for j, v in enumerate(lin):
                 txt = ("%.1f" % v).replace(".", ",") if isinstance(v, float) else str(v)
                 it = QTableWidgetItem(txt)
-                if j > 0:
+                if j > 0 and isinstance(v, (int, float)):
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if i == len(linhas) - 1:
                     it.setFont(fonte_neg)
@@ -284,6 +378,18 @@ class DialogoRelatorio(QDialog):
         r = self.res
         self._encher(self.tb_resumo, exportar.cabecalho_resumo(r), exportar.linhas_resumo(r))
         self._encher(self.tb_periodo, exportar.cabecalho_periodo(r), exportar.linhas_periodo(r))
+        com_valor = r.get("valores") is not None
+        for tabela, nome, cab, linhas in (
+                (self.tb_valor, "Por valor", exportar.cabecalho_valor, exportar.linhas_valor),
+                (self.tb_valor_periodo, "Valor por período", exportar.cabecalho_valor_periodo,
+                 exportar.linhas_valor_periodo)):
+            i = self.abas.indexOf(tabela)
+            if com_valor:
+                self._encher(tabela, cab(r), linhas(r))
+                if i < 0:
+                    self.abas.addTab(tabela, nome)
+            elif i >= 0:
+                self.abas.removeTab(i)
 
     # ---------- saída ----------
     def copiar(self):

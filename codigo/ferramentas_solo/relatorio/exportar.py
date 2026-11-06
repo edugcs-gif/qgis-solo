@@ -49,6 +49,40 @@ def linhas_periodo(res):
     return linhas
 
 
+def cabecalho_valor(res):
+    return ["Usuário"] + list(res["valores"]) + ["Total"]
+
+
+def linhas_valor(res):
+    linhas = [[l["usuario"]] + l["valores"] + [l["total"]] for l in res["valor_usuario"]]
+    linhas.append(["TOTAL"] + res["totais_valor"] + [sum(res["totais_valor"])])
+    return linhas
+
+
+def cabecalho_valor_periodo(res):
+    return ["Usuário", "Período"] + list(res["valores"]) + ["Total"]
+
+
+def linhas_valor_periodo(res):
+    linhas = [[l["usuario"], l["periodo"]] + l["valores"] + [l["total"]] for l in res["valor_periodo"]]
+    linhas.append(["TOTAL", ""] + res["totais_valor"] + [sum(res["totais_valor"])])
+    return linhas
+
+
+def tabelas(res):
+    """(nome da aba, título, cabeçalho, linhas) de todas as tabelas do relatório."""
+    t = [("Resumo por usuário", "Relatório de produção — resumo por usuário",
+          cabecalho_resumo(res), linhas_resumo(res)),
+         ("Por período", "Relatório de produção — usuário x período",
+          cabecalho_periodo(res), linhas_periodo(res))]
+    if res.get("valores") is not None:
+        t += [("Por valor", "Relatório de produção — usuário x valor",
+               cabecalho_valor(res), linhas_valor(res)),
+              ("Valor por período", "Relatório de produção — usuário x período x valor",
+               cabecalho_valor_periodo(res), linhas_valor_periodo(res))]
+    return t
+
+
 def exportar_xlsx(caminho, res, info):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -86,12 +120,10 @@ def exportar_xlsx(caminho, res, info):
             ws.column_dimensions[get_column_letter(c)].width = min(max(10, larg + 2), 40)
         ws.freeze_panes = ws.cell(row=lin0 + 1, column=2)
 
-    ws1 = wb.active
-    ws1.title = "Resumo por usuário"
-    aba(ws1, "Relatório de produção — resumo por usuário", cabecalho_resumo(res), linhas_resumo(res))
-
-    ws2 = wb.create_sheet("Por período")
-    aba(ws2, "Relatório de produção — usuário x período", cabecalho_periodo(res), linhas_periodo(res))
+    for i, (nome, titulo, cab, linhas) in enumerate(tabelas(res)):
+        ws = wb.active if i == 0 else wb.create_sheet()
+        ws.title = nome
+        aba(ws, titulo, cab, linhas)
 
     wb.save(caminho)
     return [caminho]
@@ -99,8 +131,9 @@ def exportar_xlsx(caminho, res, info):
 
 def exportar_csv(caminho, res, info):
     base, _ = os.path.splitext(caminho)
-    arqs = [(base + "_resumo.csv", cabecalho_resumo(res), linhas_resumo(res)),
-            (base + "_periodo.csv", cabecalho_periodo(res), linhas_periodo(res))]
+    sufixos = {"Resumo por usuário": "_resumo", "Por período": "_periodo",
+               "Por valor": "_valor", "Valor por período": "_valor_periodo"}
+    arqs = [(base + sufixos[nome] + ".csv", cab, linhas) for nome, _t, cab, linhas in tabelas(res)]
     for arq, cab, linhas in arqs:
         with open(arq, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f, delimiter=";")

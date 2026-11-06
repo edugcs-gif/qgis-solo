@@ -13,7 +13,7 @@ from qgis.core import (
 from qgis.gui import QgsAttributeEditorContext, QgsMapTool, QgsRubberBand, QgsVertexMarker
 
 from .compat import (FORM_PADRAO, FORM_SUPRIMIR, LINHA, MODO_ADICIONAR, NIVEL_AVISO,
-                     NIVEL_INFO, POLIGONO, PONTO, RB_CIRCULO, VM, QtC, pos_evento)
+                     NIVEL_INFO, POLIGONO, PONTO, RB_CAIXA, RB_CIRCULO, VM, QtC, pos_evento)
 from .guias import (dist_ponto_segmento, guias_angulares, intersecao, intersecao_segmento,
                     intersecao_segmentos, nova_guia)
 from ..medidas.ao_vivo import aneis_da_geometria
@@ -432,6 +432,12 @@ class FerramentaMoverVertice(_BaseGuias):
         self.marcas_meio = []    # triângulos no meio dos lados ORIGINAIS do vértice em edição
         # feição sob o cursor: destaque e escolha entre sobrepostas com ↑/↓
         self.rb_hover = self._rb(POLIGONO, QColor(255, 160, 0, 235), 3, QtC.SolidLine)
+        # vértices da feição sob o cursor: quadradinhos brancos com borda laranja (como grips do CAD)
+        self.rb_vertices = self._rb(PONTO, QColor(215, 95, 0), 2, QtC.SolidLine)
+        self.rb_vertices.setFillColor(QColor(255, 255, 255))
+        self.rb_vertices.setIcon(RB_CAIXA)
+        self.rb_vertices.setIconSize(9)
+        self._chave_vertices = None
         self.cands = []          # feições candidatas sob o cursor, na ordem de escolha
         self.sob_cursor = set()  # todas as feições sob o cursor (inclusive só "dentro")
         self.fid_pref = None     # (camada, fid) escolhida com as setas; vale enquanto estiver sob o cursor
@@ -544,18 +550,11 @@ class FerramentaMoverVertice(_BaseGuias):
         c, i = self._escolhido()
         self.hover = self.hover_seg = None
         if lyr is None or c is None:
-            self.rb_hover.reset(POLIGONO)
+            self._apagar_destaque()
             self.marcador.hide()
             self._mostrar_tip(None, None)
             return
-        self.rb_hover.reset(lyr.geometryType())
-        self.rb_hover.setColor(QColor(255, 160, 0, 235))       # contorno (e preenchimento)...
-        if lyr.geometryType() == POLIGONO:
-            self.rb_hover.setFillColor(QColor(255, 160, 0, 45))  # ...depois o preenchimento claro
-        elif lyr.geometryType() == PONTO:
-            self.rb_hover.setIcon(RB_CIRCULO)
-            self.rb_hover.setIconSize(16)
-        self.rb_hover.setToGeometry(c["geom"], lyr)
+        self._destacar(lyr, c["fid"], c["geom"])
         nome = self._nome_feicao(lyr, c["fid"])
         if c["tipo"] == "vertice":
             self.hover = (lyr, (c["d"], c["fid"], c["idx"], c["geom"], c["pt"]))
@@ -603,13 +602,39 @@ class FerramentaMoverVertice(_BaseGuias):
         return g2
 
     def _itens(self):
-        return super()._itens() + [self.rb_desloc, self.rb_hover] + self.marcas_meio
+        return super()._itens() + [self.rb_desloc, self.rb_hover, self.rb_vertices] + self.marcas_meio
 
     def limpar_visual(self):
         super().limpar_visual()
         self.rb_desloc.reset(LINHA)
-        self.rb_hover.reset(POLIGONO)
+        self._apagar_destaque()
         self._limpar_marcas_meio()
+
+    # --- destaque da feição sob o cursor: contorno laranja + todos os vértices dela ---
+    def _destacar(self, lyr, fid, geom):
+        chave = (lyr.id(), fid, hash(bytes(geom.asWkb())))
+        if chave == self._chave_vertices:
+            return                       # mesma feição: não redesenha a cada movimento do mouse
+        self._chave_vertices = chave
+        tipo = lyr.geometryType()
+        self.rb_hover.reset(tipo)
+        self.rb_hover.setColor(QColor(255, 160, 0, 235))       # contorno (e preenchimento)...
+        if tipo == POLIGONO:
+            self.rb_hover.setFillColor(QColor(255, 160, 0, 45))  # ...depois o preenchimento claro
+        elif tipo == PONTO:
+            self.rb_hover.setIcon(RB_CIRCULO)
+            self.rb_hover.setIconSize(16)
+        self.rb_hover.setToGeometry(geom, lyr)
+        self.rb_vertices.reset(PONTO)
+        if tipo != PONTO:                # num ponto o próprio ponto já é o vértice
+            pts = [QgsPointXY(v) for v in geom.vertices()]
+            if pts:
+                self.rb_vertices.setToGeometry(QgsGeometry.fromMultiPointXY(pts), lyr)
+
+    def _apagar_destaque(self):
+        self._chave_vertices = None
+        self.rb_hover.reset(POLIGONO)
+        self.rb_vertices.reset(PONTO)
 
     # --- meio dos lados como estavam ANTES da edição ---
     def _meios_originais(self, lyr, geom, idx, novo):
@@ -805,7 +830,7 @@ class FerramentaMoverVertice(_BaseGuias):
             self.sel = dict(lyr=lyr, fid=fid, idx=idx, geom=geom, orig=vm, guias=guias, novo=novo,
                             ancora=ancora, meios_orig=self._meios_originais(lyr, geom, idx, novo))
             self._mostrar_marcas_meio()
-            self.rb_hover.reset(POLIGONO)
+            self._apagar_destaque()
             self.rb_prev.reset(lyr.geometryType())
             # setColor muda contorno E preenchimento: primeiro ele, depois o preenchimento transparente
             self.rb_prev.setColor(QColor(0, 120, 255, 230))
@@ -933,14 +958,7 @@ class FerramentaMoverVertice(_BaseGuias):
         self._hover_lyr = lyr
         self.hover = (lyr, (0.0, fid, idx, QgsGeometry(g), pt))
         self.hover_seg = None
-        self.rb_hover.reset(lyr.geometryType())
-        self.rb_hover.setColor(QColor(255, 160, 0, 235))
-        if lyr.geometryType() == POLIGONO:
-            self.rb_hover.setFillColor(QColor(255, 160, 0, 45))
-        elif lyr.geometryType() == PONTO:
-            self.rb_hover.setIcon(RB_CIRCULO)
-            self.rb_hover.setIconSize(16)
-        self.rb_hover.setToGeometry(g, lyr)
+        self._destacar(lyr, fid, g)
         self.marcador.setIconType(VM.ICON_BOX)
         self.marcador.setCenter(pt)
         self.marcador.show()
