@@ -10,6 +10,7 @@ import os
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsProcessingProvider
 
+from .algoritmos.anexar_feicoes import AnexarFeicoesNaCamada
 from .algoritmos.comparar_e_selecionar import SelecaoDinamicCamadas
 from .algoritmos.corrigir_geometrias import CorrigirGeometriasNaCamada
 from .algoritmos.gerar_atualizar_quadras import GerarAtualizarQuadras
@@ -30,6 +31,7 @@ ALGORITMOS = (
     SelecionarUnidadesInconsistentes,
     TrocarParteCaminho,
     CorrigirGeometriasNaCamada,
+    AnexarFeicoesNaCamada,
 )
 
 ICONE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.svg")
