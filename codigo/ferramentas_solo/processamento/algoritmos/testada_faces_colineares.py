@@ -11,6 +11,8 @@ Uma face do lote entra na testada quando:
   3. ela está voltada para o eixo: a linha do meio da face até o eixo não
      atravessa o próprio lote (descarta o fundo) nem outro lote (descarta
      partes do lote escondidas atrás do vizinho).
+Se nenhuma face passar (ex.: lote no fim da rua, de frente para a ponta do
+eixo), vale a regra antiga: a face mais próxima do eixo.
 """
 
 import math
@@ -23,6 +25,7 @@ from qgis.core import (
     QgsFields,
     QgsField,
     QgsGeometry,
+    QgsPointXY,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -49,6 +52,9 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
     CAMPO_TESTADA = 'testada'
 
     OBSTRUCAO_MAX = 0.50    # quanto o caminho face -> eixo pode cruzar um lote (frestas de digitalização)
+    FACE_MINIMA = 0.20      # regra da face mais próxima (igual à ferramenta antiga): descarta chanfros
+    CRITERIO_ALINHADAS = 'faces alinhadas'
+    CRITERIO_MAIS_PROXIMA = 'face mais próxima'
 
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
@@ -80,6 +86,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             • ela está voltada para o eixo (o caminho até o eixo não cruza o próprio lote nem outro lote).
 
             Funciona para frentes com vários vértices e para frentes em curva.
+            Se nenhuma face estiver alinhada (ex.: lote no fim da rua), usa a face mais próxima,
+            como a ferramenta antiga; o campo 'criterio' da camada de linhas mostra qual regra valeu.
             O resultado vai no campo 'testada'. A camada de linhas mostra as faces usadas.
             """
         )
@@ -135,7 +143,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
     # ------------------------------------------------------------------ utilitários
     def _normalizar_nome(self, valor):
-        if valor is None:
+        if valor is None or str(valor) == 'NULL':   # campo vazio chega como QVariant nulo, não None
             return ''
         texto = str(valor).strip().upper()
         texto = unicodedata.normalize('NFD', texto)
@@ -218,6 +226,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             linha_fields.append(QgsField('logradouro', QVariant.String))
             linha_fields.append(QgsField('comprimento', QVariant.Double, 'double', 10, 2))
             linha_fields.append(QgsField('distancia_via', QVariant.Double, 'double', 10, 2))
+            linha_fields.append(QgsField('criterio', QVariant.String))
 
             linha_sink, linha_dest_id = self.parameterAsSink(
                 parameters, self.OUTPUT_LINHAS, context, linha_fields,
@@ -254,6 +263,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             'sem_logradouro': 0,
             'logradouro_nao_encontrado': 0,
             'geometria_invalida': 0,
+            'face_mais_proxima': 0,
         }
 
         for idx, lote_feature in enumerate(lotes_features):
@@ -268,6 +278,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             comprimento_testada = 0.0
             testada_geom = None
             distancia_via = 0.0
+            criterio = None
 
             valor_logradouro = lote_feature.attribute(campo_logradouro)
             logradouro_norm = self._normalizar_nome(valor_logradouro)
@@ -285,11 +296,13 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                     resultado = self._calcular_testada_lote(
                         lote_calc, vias_proximas, tolerancia, angulo_max, geoms_lotes, indice_lotes)
                     if resultado:
-                        comprimento_testada, testada_geom, distancia_via = resultado
+                        comprimento_testada, testada_geom, distancia_via, criterio = resultado
 
             estatisticas['processados'] += 1
             if comprimento_testada > 0:
                 estatisticas['com_testada'] += 1
+                if criterio == self.CRITERIO_MAIS_PROXIMA:
+                    estatisticas['face_mais_proxima'] += 1
             else:
                 estatisticas['sem_testada'] += 1
 
@@ -311,12 +324,15 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                 linha_feat.setAttribute('logradouro', valor_logradouro)
                 linha_feat.setAttribute('comprimento', comprimento_testada)
                 linha_feat.setAttribute('distancia_via', distancia_via)
+                linha_feat.setAttribute('criterio', criterio)
                 linha_sink.addFeature(linha_feat, QgsFeatureSink.FastInsert)
 
         # Relatório Final
         feedback.pushInfo('=' * 50)
         feedback.pushInfo(f'Total de lotes processados: {estatisticas["processados"]}')
         feedback.pushInfo(f'Lotes com testada identificada: {estatisticas["com_testada"]}')
+        feedback.pushInfo(f'  ...pela face mais próxima, sem face alinhada ao eixo (confira; campo '
+                          f'"criterio" nas linhas): {estatisticas["face_mais_proxima"]}')
         feedback.pushInfo(f'Lotes sem testada: {estatisticas["sem_testada"]}')
         feedback.pushInfo(f'Lotes sem logradouro preenchido: {estatisticas["sem_logradouro"]}')
         feedback.pushInfo(f'Logradouros não localizados nas vias: {estatisticas["logradouro_nao_encontrado"]}')
@@ -348,11 +364,29 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                     distancias.append(dist)
 
         if not escolhidas:
-            return None
+            # nenhuma face alinhada (ex.: lote no fim da rua, de frente para a ponta do eixo)
+            return self._face_mais_proxima(lote_geom, vias, tolerancia)
 
         comprimento = sum(f.length() for f in escolhidas)
         linha = QgsGeometry.collectGeometry(escolhidas).mergeLines()
-        return (round(comprimento, 2), linha, round(min(distancias), 2))
+        return (round(comprimento, 2), linha, round(min(distancias), 2), self.CRITERIO_ALINHADAS)
+
+    def _face_mais_proxima(self, lote_geom, vias, tolerancia):
+        """Regra da ferramenta antiga: a face cujo meio está mais perto do eixo."""
+        melhor = None
+        for anel in self._aneis_externos(lote_geom):
+            for p1, p2 in zip(anel, anel[1:]):
+                face = QgsGeometry.fromPolylineXY([p1, p2])
+                if face.length() < self.FACE_MINIMA:
+                    continue
+                meio = face.interpolate(face.length() / 2.0)
+                dist = min(meio.distance(v) for v in vias)
+                if dist <= tolerancia and (melhor is None or dist < melhor[0]):
+                    melhor = (dist, face)
+        if melhor is None:
+            return None
+        dist, face = melhor
+        return (round(face.length(), 2), face, round(dist, 2), self.CRITERIO_MAIS_PROXIMA)
 
     def _avaliar_face(self, face, vias, tolerancia, angulo_max, geoms_lotes, indice_lotes):
         """Retorna a distância da face ao eixo se ela for testada, senão None."""
@@ -372,9 +406,12 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         if dist > tolerancia:
             return None
 
-        # paralela ao trecho do eixo
-        if self._angulo(face.vertexAt(0), face.vertexAt(1),
-                        via.vertexAt(apos - 1), via.vertexAt(apos)) > angulo_max:
+        # paralela ao eixo no trecho em frente à face: corda entre as projeções das pontas
+        # da face no eixo (em curva, o segmento do eixo no meio da face pode ser bem mais curto)
+        a, b = QgsPointXY(face.vertexAt(0)), QgsPointXY(face.vertexAt(1))
+        c = via.closestSegmentWithContext(a)[1]
+        d = via.closestSegmentWithContext(b)[1]
+        if self._angulo(a, b, c, d) > angulo_max:
             return None
 
         # voltada para o eixo: o caminho até ele não cruza o próprio lote nem outro lote

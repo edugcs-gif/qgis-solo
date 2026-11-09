@@ -30,6 +30,7 @@ add(vias, QgsGeometry.fromPolylineXY([P(55, -10), P(55, 40)]), ['Rua B'])
 cx, cy, r = 0, -200, 100
 ponto = lambda raio, a: P(cx + raio * math.cos(math.radians(a)), cy + raio * math.sin(math.radians(a)))
 add(vias, QgsGeometry.fromPolylineXY([ponto(r, a) for a in range(60, 121, 2)]), ['RUA CURVA'])
+add(vias, QgsGeometry.fromPolylineXY([P(100, -40), P(100, 0)]), ['Rua Sem Saida'])
 
 esperado = {}
 def lote(id_, pts, logr, exp):
@@ -45,6 +46,9 @@ lote('esquina_chanfro', [P(40, 5), P(48, 5), P(50, 7), P(50, 25), P(40, 25)], 'R
 frente = [ponto(r - 6, a) for a in (90, 88, 86, 84, 82, 80)]
 exp_curva = sum(frente[i].distance(frente[i + 1]) for i in range(5))
 lote('curva', frente + [ponto(r - 26, 80), ponto(r - 26, 90)], 'Rua Curva', round(exp_curva, 2))
+# lote no fim da rua: a frente é perpendicular ao eixo -> regra da face mais próxima
+lote('fim_da_rua', [P(95, 4), P(105, 4), P(105, 24), P(95, 24)], 'Rua Sem Saída', 10)
+lote('sem_logradouro', [P(0, 30), P(10, 30), P(10, 50), P(0, 50)], None, 0)
 
 res = processing.run('ferramentas_solo:calcular_testadas_logradouro_colineares', {
     'INPUT_LOTES': lotes, 'INPUT_VIAS': vias, 'TOLERANCIA': 15.0, 'ANGULO_MAX': 20.0,
@@ -54,7 +58,9 @@ saida, linhas = res['OUTPUT'], res['OUTPUT_LINHAS']
 obtido = {f['id']: f['testada'] for f in saida.getFeatures()}
 for k, v in esperado.items():
     assert abs(obtido[k] - v) < 0.02, f'{k}: obtido {obtido[k]}, esperado {v}'
-assert linhas.featureCount() == len(esperado)
+assert linhas.featureCount() == sum(v > 0 for v in esperado.values())
 assert all(f.geometry().constGet().numGeometries() == 1 for f in linhas.getFeatures()), 'testada partida'
+criterios = [f['criterio'] for f in linhas.getFeatures()]
+assert criterios.count('face mais próxima') == 1, criterios  # só o lote no fim da rua
 print('OK -', len(esperado), 'lotes conferidos')
 app.exitQgis()
