@@ -18,29 +18,29 @@ from ferramentas_solo.processamento.provider import ProvedorSolo
 provedor = ProvedorSolo()  # guardar a referência, senão o Python descarta o provedor
 QgsApplication.processingRegistry().addProvider(provedor)
 
-vias = QgsVectorLayer('LineString?crs=EPSG:31983&field=Nome:string', 'vias', 'memory')
+vias = QgsVectorLayer('LineString?crs=EPSG:31983&field=Nome:string&field=cod:string', 'vias', 'memory')
 lotes = QgsVectorLayer('Polygon?crs=EPSG:31983&field=id:string&field=uuid:string', 'lotes', 'memory')
 
 def add(layer, geom, attrs):
     f = QgsFeature(layer.fields()); f.setGeometry(geom); f.setAttributes(attrs)
     layer.dataProvider().addFeature(f)
 
-def via(nome, *pts):
-    add(vias, QgsGeometry.fromPolylineXY([P(*p) for p in pts]), [nome])
+def via(nome, cod, *pts):
+    add(vias, QgsGeometry.fromPolylineXY([P(*p) for p in pts]), [nome, cod])
 
-via('Rua A', (-10, 0), (60, 0))
-via('Rua B', (55, -10), (55, 40))
+via('Rua A', 'A', (-10, 0), (60, 0))
+via('Rua B', 'B', (55, -10), (55, 40))
 cx, cy, r = 0, -200, 100
 ponto = lambda raio, a: P(cx + raio * math.cos(math.radians(a)), cy + raio * math.sin(math.radians(a)))
-add(vias, QgsGeometry.fromPolylineXY([ponto(r, a) for a in range(60, 121, 2)]), ['RUA CURVA'])
-via('Rua Sem Saida', (100, -40), (100, 0))
-via('Rua C', (200, 100), (260, 100))
-via('Rua D', (0, 300), (40, 300))
-via('Rua E', (0, 330), (40, 330))
-via('Rua F', (400, 0), (410, 0))                      # mesma rua, eixo partido em dois trechos
-via('Rua F', (410, 0), (440, 0))
-via('SEM DENOMINAÇÃO OFICIAL', (600, 500), (720, 500))  # duas ruas diferentes, mesmo nome
-via('SEM DENOMINAÇÃO OFICIAL', (700, 420), (700, 600))
+add(vias, QgsGeometry.fromPolylineXY([ponto(r, a) for a in range(60, 121, 2)]), ['RUA CURVA', 'CURVA'])
+via('Rua Sem Saida', 'SS', (100, -40), (100, 0))
+via('Rua C', 'C', (200, 100), (260, 100))
+via('Rua D', 'D', (0, 300), (40, 300))
+via('Rua E', 'E', (0, 330), (40, 330))
+via('Rua F', 'F1', (400, 0), (410, 0))                      # mesma rua, eixo partido em dois trechos
+via('Rua F', 'F2', (410, 0), (440, 0))
+via('SEM DENOMINAÇÃO OFICIAL', 'G1', (600, 500), (720, 500))  # duas ruas diferentes, mesmo nome
+via('SEM DENOMINAÇÃO OFICIAL', 'G2', (700, 420), (700, 600))
 
 esperado = {}  # id -> ([testada_1, testada_2, ...], precisão)
 def lote(id_, pts, testadas, precisao):
@@ -73,10 +73,14 @@ lote('eixo_partido', [(405, 5), (410, 5), (425, 5), (425, 25), (405, 25)], [20],
 # esquina de duas ruas com o mesmo nome genérico: duas testadas
 lote('esquina_mesmo_nome', [(680, 505), (695, 505), (695, 525), (680, 525)], [20, 15], 'ALTA')
 
-res = processing.run('ferramentas_solo:calcular_testadas_logradouro_colineares', {
-    'INPUT_LOTES': lotes, 'INPUT_VIAS': vias, 'TOLERANCIA': 15.0, 'ANGULO_MAX': 20.0,
-    'OUTPUT': 'memory:', 'OUTPUT_LINHAS': 'memory:'})
+def rodar(**extra):
+    return processing.run('ferramentas_solo:calcular_testadas_logradouro_colineares', dict({
+        'INPUT_LOTES': lotes, 'INPUT_VIAS': vias, 'TOLERANCIA': 15.0, 'ANGULO_MAX': 20.0,
+        'OUTPUT': 'memory:', 'OUTPUT_LINHAS': 'memory:'}, **extra))
+
+res = rodar(CAMPO_COD_VIA='cod')
 saida, linhas = res['OUTPUT'], res['OUTPUT_LINHAS']
+assert 'via_cod' not in rodar()['OUTPUT_LINHAS'].fields().names()  # sem o parâmetro, sem o campo
 
 campos_testada = [n for n in saida.fields().names() if n.startswith('testada_')]
 assert campos_testada == ['testada_1', 'testada_2'], campos_testada
@@ -89,13 +93,14 @@ for f in saida.getFeatures():
 uuid_por_id = {f['id']: f['uuid'] for f in lotes.getFeatures()}
 por_uuid = {}
 for f in linhas.getFeatures():
-    por_uuid.setdefault(f['lote_uuid'], []).append((f['testada_num'], f['comprimento'], f['via']))
+    por_uuid.setdefault(f['lote_uuid'], []).append((f['testada_num'], f['comprimento'], f['via'], f['via_cod']))
     assert f.geometry().constGet().numGeometries() == 1, 'testada partida'
 for id_, (testadas, _) in esperado.items():
     obtido = sorted(por_uuid.get(uuid_por_id[id_], []))
-    assert [n for n, _, _ in obtido] == list(range(1, len(testadas) + 1)), (id_, obtido)
-    assert all(abs(c - t) < 0.02 for (_, c, _), t in zip(obtido, testadas)), (id_, obtido)
-assert [v for _, _, v in sorted(por_uuid['{uuid-esquina_chanfro}'])] == ['Rua B', 'Rua A']
-assert [v for _, _, v in sorted(por_uuid['{uuid-duas_frentes}'])] in (['Rua D', 'Rua E'], ['Rua E', 'Rua D'])
+    assert [o[0] for o in obtido] == list(range(1, len(testadas) + 1)), (id_, obtido)
+    assert all(abs(o[1] - t) < 0.02 for o, t in zip(obtido, testadas)), (id_, obtido)
+assert [o[2:] for o in sorted(por_uuid['{uuid-esquina_chanfro}'])] == [('Rua B', 'B'), ('Rua A', 'A')]
+assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes}']) == ['D', 'E']
+assert [o[3] for o in por_uuid['{uuid-eixo_partido}']] == ['F2']  # trecho com 15 dos 20 m
 print('OK -', len(esperado), 'lotes conferidos')
 app.exitQgis()

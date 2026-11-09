@@ -39,6 +39,7 @@ from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingException,
     QgsProcessingParameterFeatureSink,
+    QgsProcessingParameterField,
     QgsProcessingParameterNumber,
     QgsProcessingParameterVectorLayer,
     QgsSpatialIndex,
@@ -51,6 +52,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
     INPUT_LOTES = 'INPUT_LOTES'
     INPUT_VIAS = 'INPUT_VIAS'
+    CAMPO_COD_VIA = 'CAMPO_COD_VIA'
     TOLERANCIA = 'TOLERANCIA'
     ANGULO_MAX = 'ANGULO_MAX'
     OUTPUT = 'OUTPUT'
@@ -99,6 +101,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
             Lotes: testada_1, testada_2... e precisao_testada.
             Linhas: uma feição por testada, com lote_uuid, testada_num, via, comprimento e precisao.
+            'Campo do eixo' (opcional): grava esse campo do eixo na linha como via_<campo> (ex.: o código
+            do logradouro ou o uuid do eixo); com eixo partido, vale o trecho que cobre a maior parte da testada.
             Precisão: ALTA (faces alinhadas ao eixo), MÉDIA (nenhuma face alinhada, ex.: lote no fim da rua:
             vale a face mais próxima), SEM TESTADA (nenhuma via perto com caminho livre).
             """
@@ -117,6 +121,14 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                 self.INPUT_VIAS,
                 self.tr('Camada de Vias com Nome'),
                 [QgsProcessing.TypeVectorLine]
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterField(
+                self.CAMPO_COD_VIA,
+                self.tr('Campo do eixo para gravar na testada (ex.: código do logradouro ou uuid)'),
+                parentLayerParameterName=self.INPUT_VIAS,
+                optional=True
             )
         )
         self.addParameter(
@@ -192,6 +204,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         vias_layer = self.parameterAsVectorLayer(parameters, self.INPUT_VIAS, context)
         tolerancia = self.parameterAsDouble(parameters, self.TOLERANCIA, context)
         angulo_max = self.parameterAsDouble(parameters, self.ANGULO_MAX, context)
+        campo_cod = self.parameterAsString(parameters, self.CAMPO_COD_VIA, context) or None
 
         if not lotes_layer or not vias_layer:
             raise QgsProcessingException('Camadas de entrada inválidas.')
@@ -219,7 +232,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             vias_layer = reprojectado['OUTPUT']
 
         # Vias: geometria, nome normalizado (para juntar trechos) e nome original
-        vias = {'geom': {}, 'nome': {}, 'original': {}}
+        vias = {'geom': {}, 'nome': {}, 'original': {}, 'codigo': {}}
         indice_vias = QgsSpatialIndex()
         for via_feat in vias_layer.getFeatures():
             g = via_feat.geometry()
@@ -229,6 +242,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             vias['geom'][vid] = g
             vias['nome'][vid] = self._normalizar_nome(via_feat.attribute(campo_nome_via))
             vias['original'][vid] = str(via_feat.attribute(campo_nome_via) or '').strip()
+            if campo_cod:
+                vias['codigo'][vid] = via_feat.attribute(campo_cod)
             indice_vias.addFeature(vid, g.boundingBox())
 
         # Lotes (geometria corrigida) + índice espacial, para saber se uma face está escondida
@@ -281,6 +296,11 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             linha_fields.append(QgsField('lote_uuid', QVariant.String))
             linha_fields.append(QgsField('testada_num', QVariant.Int))
             linha_fields.append(QgsField('via', QVariant.String))
+            if campo_cod:  # mesmo tipo do campo do eixo, com prefixo via_
+                campo_linha_cod = 'via_' + campo_cod
+                campo = QgsField(vias_layer.fields().field(campo_cod))
+                campo.setName(campo_linha_cod)
+                linha_fields.append(campo)
             linha_fields.append(QgsField('comprimento', QVariant.Double, 'double', 10, 2))
             linha_fields.append(QgsField('distancia_via', QVariant.Double, 'double', 10, 2))
             linha_fields.append(QgsField('precisao', QVariant.String))
@@ -303,14 +323,16 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
             if linha_sink:
                 uuid = lote_feature.attribute(campo_uuid) if campo_uuid else None
-                for n, (comprimento, linha, distancia, via) in enumerate(testadas, 1):
+                for n, (comprimento, linha, distancia, vid) in enumerate(testadas, 1):
                     linha.convertToMultiType()
                     linha_feat = QgsFeature(linha_fields)
                     linha_feat.setGeometry(linha)
                     linha_feat.setAttribute('lote_fid', lote_feature.id())
                     linha_feat.setAttribute('lote_uuid', uuid)
                     linha_feat.setAttribute('testada_num', n)
-                    linha_feat.setAttribute('via', via)
+                    linha_feat.setAttribute('via', vias['original'][vid])
+                    if campo_cod:
+                        linha_feat.setAttribute(campo_linha_cod, vias['codigo'][vid])
                     linha_feat.setAttribute('comprimento', comprimento)
                     linha_feat.setAttribute('distancia_via', distancia)
                     linha_feat.setAttribute('precisao', precisao)
@@ -341,7 +363,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         return [poly[0] for poly in poligonos if poly and len(poly[0]) >= 4]
 
     def _testadas_do_lote(self, lote, vias, indice_vias, tolerancia, angulo_max, geoms_lotes, indice_lotes):
-        """([(comprimento, linha, distância, via)] da maior para a menor, precisão)."""
+        """([(comprimento, linha, distância, id da via)] da maior para a menor, precisão)."""
         caixa = lote.boundingBox()
         caixa.grow(tolerancia)
         candidatas = [(v, vias['geom'][v]) for v in indice_vias.intersects(caixa)
@@ -365,7 +387,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         proxima = self._face_mais_proxima(lote, candidatas, tolerancia, geoms_lotes, indice_lotes)
         if proxima:
             face, dist, vid = proxima
-            return [(round(face.length(), 2), face, round(dist, 2), vias['original'][vid])], self.MEDIA
+            return [(round(face.length(), 2), face, round(dist, 2), vid)], self.MEDIA
         return [], self.SEM_TESTADA
 
     def _via_da_face(self, face, candidatas, tolerancia, angulo_max, geoms_lotes, indice_lotes):
@@ -398,20 +420,26 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             iguais = [g for g in grupos if g['nome'] == nome
                       and any(self._diferenca(direcao, x) <= self.DIRECAO_MAX for x in g['direcoes'])]
             if not iguais:
-                iguais = [{'nome': nome, 'via': vias['original'][vid], 'direcoes': [], 'faces': [], 'dist': []}]
+                iguais = [{'nome': nome, 'direcoes': [], 'faces': [], 'dist': [], 'vias': []}]
                 grupos.append(iguais[0])
             grupo = iguais[0]
             for outro in iguais[1:]:  # a face ligou dois grupos (ex.: curva que começa no meio do anel)
-                for chave in ('direcoes', 'faces', 'dist'):
+                for chave in ('direcoes', 'faces', 'dist', 'vias'):
                     grupo[chave] += outro[chave]
                 grupos.remove(outro)
             grupo['direcoes'].append(direcao)
             grupo['faces'].append(face)
             grupo['dist'].append(dist)
+            grupo['vias'].append(vid)
 
-        testadas = [(round(sum(f.length() for f in g['faces']), 2),
-                     QgsGeometry.collectGeometry(g['faces']).mergeLines(),
-                     round(min(g['dist']), 2), g['via']) for g in grupos]
+        testadas = []
+        for g in grupos:
+            # eixo partido: vale o trecho que cobre a maior parte da testada (nome, código, uuid)
+            por_via = {}
+            for face, vid in zip(g['faces'], g['vias']):
+                por_via[vid] = por_via.get(vid, 0.0) + face.length()
+            testadas.append((round(sum(por_via.values()), 2), QgsGeometry.collectGeometry(g['faces']).mergeLines(),
+                             round(min(g['dist']), 2), max(por_via, key=por_via.get)))
         return sorted(testadas, key=lambda t: -t[0])
 
     def _face_mais_proxima(self, lote, candidatas, tolerancia, geoms_lotes, indice_lotes):
