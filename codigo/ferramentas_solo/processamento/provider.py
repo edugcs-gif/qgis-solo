@@ -17,6 +17,7 @@ from .algoritmos.gerar_atualizar_quadras import GerarAtualizarQuadras
 from .algoritmos.puxar_campo_intersecao import PuxarCampoIntersecao
 from .algoritmos.puxar_valor_por_chave import TransferirValoresTabelasECamadas
 from .algoritmos.selecionar_unidades import SelecionarUnidadesInconsistentes
+from .algoritmos.testada_faces_colineares import CalculadoraTestadasColinearesQGIS as TestadaFacesColineares
 from .algoritmos.testada_logradouro import CalculadoraTestadasQGIS as TestadaLogradouro
 from .algoritmos.testada_via_proxima import CalculadoraTestadasQGIS as TestadaViaProxima
 from .algoritmos.trocar_parte_caminho import TrocarParteCaminho
@@ -24,6 +25,7 @@ from .algoritmos.trocar_parte_caminho import TrocarParteCaminho
 ALGORITMOS = (
     TestadaViaProxima,
     TestadaLogradouro,
+    TestadaFacesColineares,
     GerarAtualizarQuadras,
     PuxarCampoIntersecao,
     TransferirValoresTabelasECamadas,
