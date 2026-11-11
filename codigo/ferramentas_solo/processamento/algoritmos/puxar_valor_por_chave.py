@@ -138,8 +138,9 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
                 return valor.toString("yyyy-MM-dd HH:mm:ss") if isinstance(valor, QDateTime) else valor.toString("yyyy-MM-dd")
             return str(valor)
 
-        # 2. DESTINO: NÚMERO INTEIRO (Int, LongLong, UInt, etc.)
-        elif campo_destino.isNumeric() and campo_destino.precision() == 0:
+        # 2. DESTINO: NÚMERO INTEIRO — pelo tipo, não pela precisão: float8 e numeric
+        # sem escala do PostgreSQL (e REAL do GeoPackage) também informam precisão 0
+        elif tipo_destino in (QVariant.Int, QVariant.UInt, QVariant.LongLong, QVariant.ULongLong):
             try:
                 if isinstance(valor, bool):
                     return 1 if valor else 0
