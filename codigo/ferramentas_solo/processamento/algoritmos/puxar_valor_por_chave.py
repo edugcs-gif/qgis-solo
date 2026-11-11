@@ -263,29 +263,23 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
             camada_destino.selectByIds(ids_para_selecionar)
         else:
             if idx_destino != -1 and alteracoes_atributos:
-                ja_estava_editando = camada_destino.isEditable()
+                # Nunca salva sozinho: fica tudo pendente na camada, e um único Ctrl+Z desfaz
+                if not camada_destino.isEditable() and not camada_destino.startEditing():
+                    feedback.reportError(
+                        f"Não foi possível colocar a camada '{camada_destino.name()}' em edição.",
+                        fatalError=True
+                    )
+                    return {}
 
-                if ja_estava_editando or camada_destino.startEditing():
-                    for feat_id, attrs in alteracoes_atributos.items():
-                        camada_destino.changeAttributeValues(feat_id, attrs)
+                camada_destino.beginEditCommand("Puxar valor por chave comum (Ferramentas Solo)")
+                for feat_id, attrs in alteracoes_atributos.items():
+                    camada_destino.changeAttributeValues(feat_id, attrs)
+                camada_destino.endEditCommand()
 
-                    if ja_estava_editando:
-                        # Não faz commit para não gravar outras edições pendentes do usuário
-                        feedback.pushInfo(
-                            "A camada já estava em edição: alterações aplicadas, "
-                            "mas NÃO salvas. Salve as edições manualmente."
-                        )
-                    else:
-                        if not camada_destino.commitChanges():
-                            erros = "; ".join(camada_destino.commitErrors())
-                            camada_destino.rollBack()
-                            feedback.reportError(f"Falha ao salvar as alterações: {erros}", fatalError=True)
-                            return {}
-                else:
-                    # Fallback: edita via DataProvider (arquivos de rede ou bloqueados)
-                    provider = camada_destino.dataProvider()
-                    provider.changeAttributeValues(alteracoes_atributos)
-                
+                feedback.pushWarning(
+                    "As alterações NÃO foram salvas: a camada ficou em edição para conferência. "
+                    "Salve as edições, ou desfaça tudo com um Ctrl+Z."
+                )
                 camada_destino.triggerRepaint()
 
         feedback.pushInfo(f"Correspondências encontradas: {len(ids_para_selecionar)}")
