@@ -310,27 +310,28 @@ def importar_pontos(caminho, feedback, destino=None):
             if layer_cad not in pontos_por_layer:
                 pontos_por_layer[layer_cad] = []
 
+            handle = entity.dxf.handle   # vértices de uma polilinha levam o Handle da polilinha
             if entity.dxftype() == 'POINT':
                 loc = entity.dxf.location
-                pontos_por_layer[layer_cad].append(QgsPointXY(loc.x, loc.y))
+                pontos_por_layer[layer_cad].append((QgsPointXY(loc.x, loc.y), handle))
             elif entity.dxftype() == 'LWPOLYLINE':
                 for point in entity.vertices():
-                    pontos_por_layer[layer_cad].append(QgsPointXY(point[0], point[1]))
+                    pontos_por_layer[layer_cad].append((QgsPointXY(point[0], point[1]), handle))
             elif entity.dxftype() == 'POLYLINE':
                 if getattr(entity, 'is_2d_polyline', False) or getattr(entity, 'is_3d_polyline', False):
                     for v in entity.vertices:
                         loc = v.dxf.location
-                        pontos_por_layer[layer_cad].append(QgsPointXY(loc.x, loc.y))
+                        pontos_por_layer[layer_cad].append((QgsPointXY(loc.x, loc.y), handle))
             elif entity.dxftype() == 'INSERT':
                 loc = entity.dxf.insert
-                pontos_por_layer[layer_cad].append(QgsPointXY(loc.x, loc.y))
+                pontos_por_layer[layer_cad].append((QgsPointXY(loc.x, loc.y), handle))
             elif entity.dxftype() == 'CIRCLE':
                 # centroide do círculo = centro (coordenadas WCS; trata OCS/extrusão)
                 try:
                     c = entity.ocs().to_wcs(entity.dxf.center)
                 except Exception:
                     c = entity.dxf.center
-                pontos_por_layer[layer_cad].append(QgsPointXY(c.x, c.y))
+                pontos_por_layer[layer_cad].append((QgsPointXY(c.x, c.y), handle))
 
         pontos_por_layer = {k: v for k, v in pontos_por_layer.items() if len(v) > 0}
 
@@ -347,14 +348,14 @@ def importar_pontos(caminho, feedback, destino=None):
         for nome_layer, lista_pontos in pontos_por_layer.items():
             vl = QgsVectorLayer(f"Point?crs={crs}", f"Layer: {nome_layer}", "memory")
             pr = vl.dataProvider()
-            pr.addAttributes([QgsField("Layer_CAD", QVariant.String)])
+            pr.addAttributes([QgsField("Layer_CAD", QVariant.String), QgsField("Handle", QVariant.String)])
             vl.updateFields()
 
             features = []
-            for pt in lista_pontos:
+            for pt, handle in lista_pontos:
                 f = QgsFeature(vl.fields())
                 f.setGeometry(QgsGeometry.fromPointXY(pt))
-                f.setAttributes([nome_layer])
+                f.setAttributes([nome_layer, handle])
                 features.append(f)
 
             pr.addFeatures(features)
@@ -379,7 +380,7 @@ def importar_pontos(caminho, feedback, destino=None):
 # ---------------------------------------------------------------------------
 # 2) Importar Textos
 #    (adaptado de importardwgtextos.py) - cria uma única camada de pontos
-#    com os atributos Texto e Layer_CAD, adicionada diretamente ao projeto
+#    com os atributos Texto, Layer_CAD e Handle, adicionada diretamente ao projeto
 # ---------------------------------------------------------------------------
 def importar_textos(caminho, feedback, destino=None):
     validar_arquivo(caminho)
@@ -398,6 +399,7 @@ def importar_textos(caminho, feedback, destino=None):
         pr.addAttributes([
             QgsField("Texto", QVariant.String),
             QgsField("Layer_CAD", QVariant.String),
+            QgsField("Handle", QVariant.String),
         ])
         vl.updateFields()
 
@@ -422,7 +424,7 @@ def importar_textos(caminho, feedback, destino=None):
 
             f = QgsFeature(vl.fields())
             f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(ponto_insercao.x, ponto_insercao.y)))
-            f.setAttributes([texto_puro, entity.dxf.layer])
+            f.setAttributes([texto_puro, entity.dxf.layer, entity.dxf.handle])
             features.append(f)
 
         pr.addFeatures(features)
@@ -502,7 +504,7 @@ def importar_linhas(caminho, feedback, destino=None):
                 if geom.isGeosValid():
                     if layer_cad not in linhas_por_layer:
                         linhas_por_layer[layer_cad] = []
-                    linhas_por_layer[layer_cad].append(geom)
+                    linhas_por_layer[layer_cad].append((geom, entity.dxf.handle))
 
         if not linhas_por_layer:
             return "Nenhuma linha aberta válida foi encontrada."
@@ -517,14 +519,14 @@ def importar_linhas(caminho, feedback, destino=None):
         for nome_layer, geometrias in linhas_por_layer.items():
             vl = QgsVectorLayer(f"LineString?crs={crs}", f"Layer: {nome_layer}", "memory")
             pr = vl.dataProvider()
-            pr.addAttributes([QgsField("Layer_CAD", QVariant.String)])
+            pr.addAttributes([QgsField("Layer_CAD", QVariant.String), QgsField("Handle", QVariant.String)])
             vl.updateFields()
 
             features = []
-            for geom in geometrias:
+            for geom, handle in geometrias:
                 f = QgsFeature(vl.fields())
                 f.setGeometry(geom)
-                f.setAttributes([nome_layer])
+                f.setAttributes([nome_layer, handle])
                 features.append(f)
 
             pr.addFeatures(features)
@@ -606,7 +608,7 @@ def importar_poligonos(caminho, feedback, destino=None):
             if geom.isGeosValid():
                 if layer_cad not in poligonos_por_layer:
                     poligonos_por_layer[layer_cad] = []
-                poligonos_por_layer[layer_cad].append(geom)
+                poligonos_por_layer[layer_cad].append((geom, entity.dxf.handle))
 
         if not poligonos_por_layer:
             return "Nenhum polígono (forma fechada) válido foi encontrado."
@@ -620,14 +622,15 @@ def importar_poligonos(caminho, feedback, destino=None):
         for nome_layer, geometrias in poligonos_por_layer.items():
             vl = QgsVectorLayer(f"Polygon?crs={crs}", f"Layer: {nome_layer}", "memory")
             pr = vl.dataProvider()
-            pr.addAttributes([QgsField("Layer_CAD", QVariant.String)])
+            pr.addAttributes([QgsField("Layer_CAD", QVariant.String), QgsField("Handle", QVariant.String),
+                              QgsField("Area", QVariant.Double)])
             vl.updateFields()
 
             features = []
-            for geom in geometrias:
+            for geom, handle in geometrias:
                 f = QgsFeature(vl.fields())
                 f.setGeometry(geom)
-                f.setAttributes([nome_layer])
+                f.setAttributes([nome_layer, handle, geom.area()])
                 features.append(f)
 
             pr.addFeatures(features)
