@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """Lógica de agregação (sem dependência do QGIS)."""
 import datetime as dt
+import re
 from collections import defaultdict
 
 SEM_USUARIO = "(sem usuário)"
 SEM_VALOR = "(vazio)"
 SEM_DATA = "(sem data)"
+FORA_DOS_SETORES = "Fora dos setores"
 
 MESES = ["jan", "fev", "mar", "abr", "mai", "jun",
          "jul", "ago", "set", "out", "nov", "dez"]
@@ -37,6 +39,29 @@ def chave_periodo(d, modo):
     if modo == "mes":
         return ("%04d-%02d" % (d.year, d.month), "%s/%d" % (MESES[d.month - 1], d.year))
     return (d.isoformat(), d.strftime("%d/%m/%Y"))
+
+
+def por_setor(pares, valores=(), valor_pct=None):
+    """
+    Contagem setor x valor. pares: iterável de (setores, valor) — os nomes dos setores em que a feição
+    cai (vazio = fora de todos; mais de um = contada em cada um) e o texto do "campo do valor".
+    valores: as colunas, na ordem do relatório. valor_pct: o valor da coluna de percentual do setor.
+    """
+    cont = defaultdict(lambda: defaultdict(int))    # setor -> valor -> n
+    total = defaultdict(int)                        # setor -> n
+    for setores, valor in pares:
+        valor = SEM_VALOR if valor in (None, "") else str(valor)
+        for s in (setores or [FORA_DOS_SETORES]):
+            cont[s][valor] += 1
+            total[s] += 1
+    # ordem natural: setor 2 antes do 10
+    natural = lambda s: [int(t) if i % 2 else t.lower() for i, t in enumerate(re.split(r"(\d+)", s))]
+    nomes = sorted((s for s in total if s != FORA_DOS_SETORES), key=natural)
+    if FORA_DOS_SETORES in total:
+        nomes.append(FORA_DOS_SETORES)
+    return {"valores": list(valores), "valor_pct": valor_pct,
+            "linhas": [{"setor": s, "valores": [cont[s].get(v, 0) for v in valores], "total": total[s],
+                        "n_pct": cont[s].get(valor_pct, 0)} for s in nomes]}
 
 
 def agregar(registros, modo="dia", camadas=None, ordem_valores=None):

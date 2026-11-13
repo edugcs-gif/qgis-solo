@@ -10,14 +10,22 @@ from qgis.PyQt.QtWidgets import (
     QTableWidget, QTableWidgetItem, QLabel, QFileDialog, QMessageBox, QHeaderView,
     QApplication, QAbstractItemView,
 )
-from qgis.core import QgsApplication, QgsProject, QgsVectorLayer, QgsFeatureRequest, QgsSettings
+from qgis.core import (
+    Qgis, QgsApplication, QgsCoordinateTransform, QgsFeatureRequest, QgsProject, QgsSettings,
+    QgsSpatialIndex, QgsVectorLayer, QgsWkbTypes,
+)
 
-from .core import SEM_VALOR, agregar, parse_texto_data
+from .core import SEM_VALOR, agregar, parse_texto_data, por_setor
 from . import exportar
 
 PASTA = os.path.dirname(__file__)
 CHAVE = "relatorio_producao/"
 NENHUM = "(nenhum)"
+NENHUMA = "(nenhuma)"
+try:
+    POLIGONO = Qgis.GeometryType.Polygon          # QGIS >= 3.30
+except AttributeError:
+    POLIGONO = QgsWkbTypes.PolygonGeometry
 
 
 def para_data(v):
@@ -93,6 +101,30 @@ def _nulo(v):
         return False
 
 
+class Setores:
+    """Nomes dos setores (polígonos) em que cada feição cai."""
+
+    def __init__(self, lyr, campo):
+        self.crs = lyr.crs()
+        self.geoms = {}
+        self.indice = QgsSpatialIndex()
+        for ft in lyr.getFeatures():
+            if ft.hasGeometry():
+                nome = ft[campo]
+                self.geoms[ft.id()] = ("(sem código)" if _nulo(nome) else str(nome), ft.geometry())
+                self.indice.addFeature(ft)
+
+    def __call__(self, geom, xform=None):
+        if geom.isNull() or geom.isEmpty():
+            return []
+        # ponto na superfície: lote na divisa de dois setores conta num só (em camada de pontos é o próprio ponto)
+        ponto = geom.pointOnSurface()
+        if xform is not None:
+            ponto.transform(xform)
+        candidatos = (self.geoms[i] for i in self.indice.intersects(ponto.boundingBox()))
+        return sorted({nome for nome, g in candidatos if g.intersects(ponto)})
+
+
 def para_usuario(v):
     if v is None:
         return None
@@ -146,6 +178,14 @@ class DialogoRelatorio(QDialog):
         self.cb_valor.currentIndexChanged.connect(
             lambda _i: self.chk_preenchido.setEnabled(self.cb_valor.currentText() != NENHUM))
 
+        self.cb_setores = QComboBox()
+        self.cb_setores.setToolTip("Opcional: cria a aba \"Por setor\", contando as feições dentro de cada polígono "
+                                   "desta camada (ex.: Setores), separadas pelos valores do campo do valor")
+        self.cb_campo_setor = QComboBox()
+        self.cb_setores.currentIndexChanged.connect(self._atualizar_campo_setor)
+        f.addRow("Camada de setores:", self.cb_setores)
+        f.addRow("Campo do setor:", self.cb_campo_setor)
+
         self.chk_periodo = QCheckBox("Filtrar período")
         self.chk_periodo.setChecked(self.s.value(CHAVE + "filtrar", False, type=bool))
         hoje = QDate.currentDate()
@@ -182,6 +222,7 @@ class DialogoRelatorio(QDialog):
         self.abas.addTab(self.tb_periodo, "Por período")
         self.tb_valor = self._tabela()             # abas do campo do valor (só aparecem quando usado)
         self.tb_valor_periodo = self._tabela()
+        self.tb_setor = self._tabela()             # aba da camada de setores (só aparece quando usada)
         lay.addWidget(self.abas, 1)
 
         rod = QHBoxLayout()
@@ -207,9 +248,12 @@ class DialogoRelatorio(QDialog):
         ativa = self.iface.activeLayer()
         self.lista.blockSignals(True)
         self.lista.clear()
+        poligonos = []
         for lyr in QgsProject.instance().mapLayers().values():
             if not isinstance(lyr, QgsVectorLayer):
                 continue
+            if lyr.geometryType() == POLIGONO:
+                poligonos.append(lyr)
             it = QListWidgetItem(lyr.name())
             it.setData(Qt.UserRole, lyr.id())
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
@@ -219,6 +263,35 @@ class DialogoRelatorio(QDialog):
         self.lista.sortItems()
         self.lista.blockSignals(False)
         self._atualizar_campos()
+
+        atual = self.cb_setores.currentData() or self.s.value(CHAVE + "camada_setores", "")
+        self.cb_setores.blockSignals(True)
+        self.cb_setores.clear()
+        self.cb_setores.addItem(NENHUMA, "")
+        for lyr in sorted(poligonos, key=lambda l: l.name().lower()):
+            self.cb_setores.addItem(lyr.name(), lyr.id())
+        self.cb_setores.setCurrentIndex(max(0, self.cb_setores.findData(atual)))
+        self.cb_setores.blockSignals(False)
+        self._atualizar_campo_setor()
+
+    def _camada_setores(self):
+        return QgsProject.instance().mapLayer(self.cb_setores.currentData() or "")
+
+    def _atualizar_campo_setor(self, *_):
+        lyr = self._camada_setores()
+        self.cb_campo_setor.clear()
+        self.cb_campo_setor.setEnabled(lyr is not None)
+        if lyr is None:
+            return
+        nomes = [fld.name() for fld in lyr.fields()]
+        self.cb_campo_setor.addItems(nomes)
+        # padrão: o último usado; senão, o campo da simbologia categorizada da camada
+        rend = lyr.renderer()
+        for nome in (self.s.value(CHAVE + "campo_setor", ""),
+                     rend.classAttribute() if rend is not None and rend.type() == "categorizedSymbol" else ""):
+            if nome in nomes:
+                self.cb_campo_setor.setCurrentText(nome)
+                break
 
     def _camadas_marcadas(self):
         out = []
@@ -277,6 +350,11 @@ class DialogoRelatorio(QDialog):
                                                                     "\n- ".join(faltando)))
             return
         so_preenchido = bool(c_valor) and self.chk_preenchido.isChecked()
+        lyr_setores = self._camada_setores()
+        c_setor = self.cb_campo_setor.currentText()
+        if lyr_setores is not None and lyr_setores.fields().indexOf(c_setor) < 0:
+            QMessageBox.warning(self, "Relatório", "Escolha o campo do setor.")
+            return
 
         filtrar = self.chk_periodo.isChecked()
         d_ini, d_fim = self.de.date().toPyDate(), self.ate.date().toPyDate()
@@ -294,6 +372,9 @@ class DialogoRelatorio(QDialog):
         self.s.setValue(CHAVE + "agrup", modo)
         self.s.setValue(CHAVE + "campo_valor", c_valor or NENHUM)
         self.s.setValue(CHAVE + "so_preenchido", self.chk_preenchido.isChecked())
+        self.s.setValue(CHAVE + "camada_setores", lyr_setores.id() if lyr_setores is not None else "")
+        if lyr_setores is not None:
+            self.s.setValue(CHAVE + "campo_setor", c_setor)
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -301,12 +382,19 @@ class DialogoRelatorio(QDialog):
             fora = 0
             sem_valor = 0
             ordem = []
+            setores = Setores(lyr_setores, c_setor) if lyr_setores is not None else None
+            pares = []          # (setores em que a feição cai, valor) das feições contadas
+            em_varios = 0
             for lyr in camadas:
                 req = QgsFeatureRequest()
-                try:
-                    req.setFlags(QgsFeatureRequest.NoGeometry)
-                except Exception:
-                    pass
+                xform = None
+                if setores is None:
+                    try:
+                        req.setFlags(QgsFeatureRequest.NoGeometry)
+                    except Exception:
+                        pass
+                elif lyr.crs() != setores.crs:
+                    xform = QgsCoordinateTransform(lyr.crs(), setores.crs, QgsProject.instance())
                 req.setSubsetOfAttributes(campos, lyr.fields())
                 it = lyr.getSelectedFeatures(req) if so_sel else lyr.getFeatures(req)
                 i_u, i_d = lyr.fields().indexOf(c_user), lyr.fields().indexOf(c_data)
@@ -320,15 +408,22 @@ class DialogoRelatorio(QDialog):
                     if filtrar and (d is None or d < d_ini or d > d_fim):
                         fora += 1
                         continue
-                    if rep is None:
-                        registros.append((lyr.name(), para_usuario(ft.attribute(i_u)), d))
-                        continue
-                    valor = rep(ft.attribute(i_v))
-                    if valor is None and so_preenchido:
-                        sem_valor += 1
-                        continue
-                    registros.append((lyr.name(), para_usuario(ft.attribute(i_u)), d, valor))
+                    valor = None
+                    if rep is not None:
+                        valor = rep(ft.attribute(i_v))
+                        if valor is None and so_preenchido:
+                            sem_valor += 1
+                            continue
+                    reg = (lyr.name(), para_usuario(ft.attribute(i_u)), d)
+                    registros.append(reg if rep is None else reg + (valor,))
+                    if setores is not None:
+                        nomes = setores(ft.geometry(), xform)
+                        em_varios += len(nomes) > 1
+                        pares.append((nomes, valor))
             self.res = agregar(registros, modo, [l.name() for l in camadas], ordem)
+            if setores is not None:
+                # o percentual é do primeiro valor do mapa de valores (sem mapa, não há percentual)
+                self.res["setor"] = por_setor(pares, self.res.get("valores") or [], ordem[0] if ordem else None)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -341,7 +436,9 @@ class DialogoRelatorio(QDialog):
             "Agrupamento: " + self.cb_agrup.currentText() + (" | apenas selecionadas" if so_sel else ""),
         ] + ([
             "Campo do valor: %s%s" % (c_valor, " (só feições com o campo preenchido)" if so_preenchido else ""),
-        ] if c_valor else []) + [
+        ] if c_valor else []) + ([
+            "Setores: %s (campo %s)" % (lyr_setores.name(), c_setor),
+        ] if lyr_setores is not None else []) + [
             "Gerado em: " + dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
         ]
         txt = ("<b>Total produzido:</b> %d &nbsp;|&nbsp; <b>Usuários:</b> %d &nbsp;|&nbsp; "
@@ -353,6 +450,9 @@ class DialogoRelatorio(QDialog):
             txt += " &nbsp;|&nbsp; %d fora do período" % fora
         if c_valor and so_preenchido and sem_valor:
             txt += " &nbsp;|&nbsp; %d sem '%s' preenchido (não contadas)" % (sem_valor, c_valor)
+        if em_varios:
+            txt += (" &nbsp;|&nbsp; <span style='color:#b00'>%d em mais de um setor (contadas em cada um)</span>"
+                    % em_varios)
         self.lbl.setText(txt)
         for b in (self.bt_copiar, self.bt_exportar):
             b.setEnabled(r["total"] > 0)
@@ -379,12 +479,13 @@ class DialogoRelatorio(QDialog):
         self._encher(self.tb_resumo, exportar.cabecalho_resumo(r), exportar.linhas_resumo(r))
         self._encher(self.tb_periodo, exportar.cabecalho_periodo(r), exportar.linhas_periodo(r))
         com_valor = r.get("valores") is not None
-        for tabela, nome, cab, linhas in (
-                (self.tb_valor, "Por valor", exportar.cabecalho_valor, exportar.linhas_valor),
-                (self.tb_valor_periodo, "Valor por período", exportar.cabecalho_valor_periodo,
-                 exportar.linhas_valor_periodo)):
+        for tabela, nome, mostrar, cab, linhas in (
+                (self.tb_valor, "Por valor", com_valor, exportar.cabecalho_valor, exportar.linhas_valor),
+                (self.tb_valor_periodo, "Valor por período", com_valor, exportar.cabecalho_valor_periodo,
+                 exportar.linhas_valor_periodo),
+                (self.tb_setor, "Por setor", "setor" in r, exportar.cabecalho_setor, exportar.linhas_setor)):
             i = self.abas.indexOf(tabela)
-            if com_valor:
+            if mostrar:
                 self._encher(tabela, cab(r), linhas(r))
                 if i < 0:
                     self.abas.addTab(tabela, nome)
