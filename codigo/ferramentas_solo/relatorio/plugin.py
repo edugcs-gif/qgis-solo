@@ -15,7 +15,7 @@ from qgis.core import (
     QgsSpatialIndex, QgsVectorLayer, QgsWkbTypes,
 )
 
-from .core import SEM_VALOR, agregar, parse_texto_data, por_setor
+from .core import SEM_USUARIO, SEM_VALOR, agregar, parse_texto_data, por_setor
 from . import exportar
 
 PASTA = os.path.dirname(__file__)
@@ -222,7 +222,8 @@ class DialogoRelatorio(QDialog):
         self.abas.addTab(self.tb_periodo, "Por período")
         self.tb_valor = self._tabela()             # abas do campo do valor (só aparecem quando usado)
         self.tb_valor_periodo = self._tabela()
-        self.tb_setor = self._tabela()             # aba da camada de setores (só aparece quando usada)
+        self.tb_setor = self._tabela()             # abas da camada de setores (só aparecem quando usada)
+        self.tb_usuario_setor = self._tabela()
         lay.addWidget(self.abas, 1)
 
         rod = QHBoxLayout()
@@ -414,16 +415,19 @@ class DialogoRelatorio(QDialog):
                         if valor is None and so_preenchido:
                             sem_valor += 1
                             continue
-                    reg = (lyr.name(), para_usuario(ft.attribute(i_u)), d)
+                    user = para_usuario(ft.attribute(i_u))
+                    reg = (lyr.name(), user, d)
                     registros.append(reg if rep is None else reg + (valor,))
                     if setores is not None:
                         nomes = setores(ft.geometry(), xform)
                         em_varios += len(nomes) > 1
-                        pares.append((nomes, valor))
+                        pares.append((nomes, valor, (user or "").strip() or SEM_USUARIO))   # usuário como no agregar
             self.res = agregar(registros, modo, [l.name() for l in camadas], ordem)
             if setores is not None:
                 # o percentual é do primeiro valor do mapa de valores (sem mapa, não há percentual)
-                self.res["setor"] = por_setor(pares, self.res.get("valores") or [], ordem[0] if ordem else None)
+                self.res["setor"] = por_setor([(s, v) for s, v, _u in pares], self.res.get("valores") or [],
+                                              ordem[0] if ordem else None)
+                self.res["usuario_setor"] = por_setor([(s, u) for s, _v, u in pares], self.res["usuarios"])
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -483,7 +487,9 @@ class DialogoRelatorio(QDialog):
                 (self.tb_valor, "Por valor", com_valor, exportar.cabecalho_valor, exportar.linhas_valor),
                 (self.tb_valor_periodo, "Valor por período", com_valor, exportar.cabecalho_valor_periodo,
                  exportar.linhas_valor_periodo),
-                (self.tb_setor, "Por setor", "setor" in r, exportar.cabecalho_setor, exportar.linhas_setor)):
+                (self.tb_setor, "Por setor", "setor" in r, exportar.cabecalho_setor, exportar.linhas_setor),
+                (self.tb_usuario_setor, "Usuário por setor", "setor" in r, exportar.cabecalho_usuario_setor,
+                 exportar.linhas_usuario_setor)):
             i = self.abas.indexOf(tabela)
             if mostrar:
                 self._encher(tabela, cab(r), linhas(r))

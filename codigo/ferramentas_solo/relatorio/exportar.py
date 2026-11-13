@@ -88,6 +88,21 @@ def linhas_setor(res):
     return linhas
 
 
+def cabecalho_usuario_setor(res):
+    return ["Usuário"] + [l["setor"] for l in res["usuario_setor"]["linhas"]] + ["Total"]
+
+
+def linhas_usuario_setor(res):
+    # por_setor dá setor x usuário; aqui vira usuário x setor
+    s = res["usuario_setor"]
+    linhas = []
+    for i, u in enumerate(s["valores"]):
+        vals = [l["valores"][i] for l in s["linhas"]]
+        linhas.append([u] + vals + [sum(vals)])
+    tot = [l["total"] for l in s["linhas"]]
+    return linhas + [["TOTAL"] + tot + [sum(tot)]]
+
+
 def tabelas(res):
     """(nome da aba, título, cabeçalho, linhas) de todas as tabelas do relatório."""
     t = [("Resumo por usuário", "Relatório de produção — resumo por usuário",
@@ -100,8 +115,10 @@ def tabelas(res):
               ("Valor por período", "Relatório de produção — usuário x período x valor",
                cabecalho_valor_periodo(res), linhas_valor_periodo(res))]
     if res.get("setor"):
-        t.append(("Por setor", "Relatório de produção — setor x valor",
-                  cabecalho_setor(res), linhas_setor(res)))
+        t += [("Por setor", "Relatório de produção — setor x valor",
+               cabecalho_setor(res), linhas_setor(res)),
+              ("Usuário por setor", "Relatório de produção — usuário x setor",
+               cabecalho_usuario_setor(res), linhas_usuario_setor(res))]
     return t
 
 
@@ -154,7 +171,8 @@ def exportar_xlsx(caminho, res, info):
 def exportar_csv(caminho, res, info):
     base, _ = os.path.splitext(caminho)
     sufixos = {"Resumo por usuário": "_resumo", "Por período": "_periodo",
-               "Por valor": "_valor", "Valor por período": "_valor_periodo", "Por setor": "_setor"}
+               "Por valor": "_valor", "Valor por período": "_valor_periodo", "Por setor": "_setor",
+               "Usuário por setor": "_usuario_setor"}
     arqs = [(base + sufixos[nome] + ".csv", cab, linhas) for nome, _t, cab, linhas in tabelas(res)]
     for arq, cab, linhas in arqs:
         with open(arq, "w", newline="", encoding="utf-8-sig") as f:

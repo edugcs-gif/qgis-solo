@@ -50,7 +50,7 @@ ponto(500, 500, 'NÃO')                                                         
 
 # lote do setor 2 encostado na divisa com o 10: conta só no 2
 lotes = QgsVectorLayer('Polygon?crs=EPSG:31983' + campos, 'Lotes', 'memory')
-add(lotes, quadrado(X + 80, Y + 10, 20), ['ana', '2026-11-10', 'SIM'])
+add(lotes, quadrado(X + 80, Y + 10, 20), ['bia', '2026-11-10', 'SIM'])
 
 QgsProject.instance().addMapLayers([setores, pontos, lotes])
 
@@ -90,6 +90,14 @@ assert exportar.linhas_setor(dlg.res) == [
 assert dlg.abas.indexOf(dlg.tb_setor) >= 0 and dlg.tb_setor.item(0, 0).text() == '2'
 assert dlg.res['total'] == 8                      # as outras abas continuam contando cada feição uma vez
 
+# usuário x setor
+assert exportar.cabecalho_usuario_setor(dlg.res) == ['Usuário', '2', '10', 'Fora dos setores', 'Total']
+assert exportar.linhas_usuario_setor(dlg.res) == [
+    ['ana', 4, 2, 1, 7],
+    ['bia', 1, 0, 0, 1],
+    ['TOTAL', 5, 2, 1, 8]], exportar.linhas_usuario_setor(dlg.res)
+assert dlg.abas.indexOf(dlg.tb_usuario_setor) >= 0
+
 # com mapa de valores: colunas com os nomes do mapa, na ordem dele, e percentual do primeiro
 mapa = {'map': [{'Localizado': 'SIM'}, {'A confirmar': 'POSSIVELMENTE SIM'}, {'Não encontrado': 'NÃO'}]}
 for lyr in (pontos, lotes):
@@ -104,11 +112,11 @@ assert exportar.linhas_setor(dlg.res) == [
     ['TOTAL', 4, 1, 2, 1, 8, 50.0]], exportar.linhas_setor(dlg.res)
 
 arqs = exportar.exportar_csv(os.path.join(tempfile.mkdtemp(), 'r.csv'), dlg.res, dlg.info)
-assert any(a.endswith('_setor.csv') for a in arqs), arqs
+assert any(a.endswith('_setor.csv') for a in arqs) and any(a.endswith('_usuario_setor.csv') for a in arqs), arqs
 
 # sem camada de setores: a aba some e o relatório fica como era
 dlg.cb_setores.setCurrentIndex(0)
 dlg.gerar()
-assert 'setor' not in dlg.res and dlg.abas.indexOf(dlg.tb_setor) < 0
+assert 'setor' not in dlg.res and dlg.abas.indexOf(dlg.tb_setor) < 0 and dlg.abas.indexOf(dlg.tb_usuario_setor) < 0
 
 print('OK')
