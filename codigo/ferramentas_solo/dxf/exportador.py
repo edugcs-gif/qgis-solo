@@ -12,6 +12,8 @@ from qgis.core import (
     QgsDxfExport
 )
 
+from ..guias.compat import POLIGONO
+
 # Caminho dinâmico para a Área de Trabalho de qualquer usuário
 OUTPUT_DIR = str(Path.home() / "Desktop" / "dxf")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "Exportado(DXF).dxf")
@@ -30,10 +32,11 @@ def exportar_selecao(iface):
         )
         return
 
-    if layer.type() != layer.VectorLayer:
+    # antes de abrir o arquivo: senão a exportação anterior é zerada e nada é gravado
+    if not isinstance(layer, QgsVectorLayer) or layer.geometryType() != POLIGONO:
         iface.messageBar().pushMessage(
             "Exportador DXF",
-            "A camada ativa não é uma camada vetorial.",
+            "A camada ativa não é de polígonos.",
             level=Qgis.Warning,
             duration=5,
         )

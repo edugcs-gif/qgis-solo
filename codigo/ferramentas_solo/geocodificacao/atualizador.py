@@ -116,9 +116,8 @@ class AtualizadorDialog(QDialog):
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(fields)
-            idx = combo.findText(old)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+            # campo que não existe nesta camada fica em branco (regra ignorada), nunca no 1º campo
+            combo.setCurrentIndex(combo.findText(old))
             combo.blockSignals(False)
 
     def add_rule(self, field="", expression=""):
@@ -129,9 +128,7 @@ class AtualizadorDialog(QDialog):
         if layer:
             combo.addItems([f.name() for f in layer.fields()])
         if field:
-            idx = combo.findText(field)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+            combo.setCurrentIndex(combo.findText(field))
         self.table.setCellWidget(r, 0, combo)
         expr_item = QTableWidgetItem(expression)
         self.table.setItem(r, 1, expr_item)
@@ -238,9 +235,8 @@ class AtualizadorDialog(QDialog):
             self.refresh_fields()
             for r, rule in enumerate(data.get("rules", [])):   # campo de novo, já com a camada certa
                 combo = self.table.cellWidget(r, 0)
-                i = combo.findText(rule.get("field", "")) if combo else -1
-                if i >= 0:
-                    combo.setCurrentIndex(i)
+                if combo:
+                    combo.setCurrentIndex(combo.findText(rule.get("field", "")))
             self.status.setText(f"Configuração carregada: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "Erro ao carregar", f"Não foi possível carregar a configuração:\n{e}")
@@ -265,6 +261,10 @@ class AtualizadorDialog(QDialog):
             exp = QgsExpression(rule["expression"])
             if exp.hasParserError():
                 QMessageBox.warning(self, "Expressão inválida", f"Campo: {rule['field']}\n{exp.parserErrorString()}")
+                return
+            # campo inexistente na expressão: sem isto o evaluate devolve NULL sem erro e apaga o campo
+            if not exp.prepare(contexto(layer)):
+                QMessageBox.warning(self, "Expressão inválida", f"Campo: {rule['field']}\n{exp.evalErrorString()}")
                 return
             expressions.append((rule["field"], idx, exp))
 

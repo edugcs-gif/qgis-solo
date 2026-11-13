@@ -31,7 +31,6 @@ from qgis.core import (
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterField,
     QgsProcessingParameterVectorLayer,
-    QgsProject,
     QgsVectorDataProvider,
     QgsVectorLayerUtils,
     QgsWkbTypes,
@@ -403,7 +402,6 @@ class AnexarFeicoesNaCamada(QgsProcessingAlgorithm):
                             n_sem_conversao += 1
                             continue
                         geom = convertida
-                    geom.avoidIntersections(QgsProject.instance().avoidIntersectionsLayers())
 
             attrs = {t: in_feature[s] for t, s in mapping.items()}
 
@@ -438,6 +436,10 @@ class AnexarFeicoesNaCamada(QgsProcessingAlgorithm):
                             n_geom_mantidas += 1
                     else:
                         geom_por_feicao[fid] = geom
+
+        if feedback.isCanceled():       # cancelado: não grava nada pela metade
+            feedback.pushInfo("Cancelado: nada foi gravado em '%s'." % target.name())
+            return results
 
         # grava tudo de uma vez
         n_attrs = 0

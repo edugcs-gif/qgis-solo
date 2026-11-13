@@ -231,6 +231,9 @@ class PuxarCampoIntersecao(QgsProcessingAlgorithm):
                 if total:
                     feedback.setProgress(int(current * 100 / total))
 
+            if feedback.isCanceled():   # cancelado: não grava nada pela metade
+                return {}
+
             if updates:
 
                 ok = layer.dataProvider().changeAttributeValues(updates)

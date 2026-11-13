@@ -263,6 +263,9 @@ class RemoverFiletes:
                 layer.geometryType() != POLIGONO:
             self._msg("Selecione uma camada de polígonos no painel de camadas.", N_AVISO)
             return
+        if layer.crs().isGeographic():      # a largura (0,10) viraria graus: apagaria tudo
+            self._msg("A camada está em SRC geográfico (graus). Use um SRC projetado (ex.: UTM).", N_CRITICO)
+            return
 
         dlg = DialogoFiletes(self.iface.mainWindow(), layer.selectedFeatureCount(), layer.name())
         if (dlg.exec_() if hasattr(dlg, "exec_") else dlg.exec()) != ACEITO:
@@ -317,7 +320,8 @@ class RemoverFiletes:
                 area_nova = sum(p.area() for p in partes)
                 n_vert_ant = sum(1 for _ in g.vertices())
                 n_vert_novo = sum(sum(1 for _ in p.vertices()) for p in partes)
-                if abs(area_ant - area_nova) < 1e-9 and n_vert_ant == n_vert_novo:
+                # 1 mm²: o arredondamento em coordenadas UTM passa de 1e-9
+                if abs(area_ant - area_nova) < 1e-6 and n_vert_ant == n_vert_novo:
                     continue  # nada mudou
 
                 if multi:

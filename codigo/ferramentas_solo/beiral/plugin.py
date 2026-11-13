@@ -151,8 +151,10 @@ def _ajustar_tipo(geom, tipo_camada):
     if QgsWkbTypes.isMultiType(tipo_camada) and not geom.isMultipart():
         geom.convertToMultiType()
     elif not QgsWkbTypes.isMultiType(tipo_camada) and geom.isMultipart():
-        if not geom.convertToSingleType():
-            raise ErroBeiral("camada e de poligono simples, mas a geometria tem varias partes")
+        # convertToSingleType() com varias partes fica so com a primeira e ainda devolve True
+        partes = geom.constGet().partCount()
+        if partes > 1 or not geom.convertToSingleType():
+            raise ErroBeiral("a geometria ficou com %d partes, mas a camada e de poligono simples" % partes)
     if QgsWkbTypes.hasZ(tipo_camada) and not QgsWkbTypes.hasZ(geom.wkbType()):
         geom.get().addZValue(0)
     elif not QgsWkbTypes.hasZ(tipo_camada) and QgsWkbTypes.hasZ(geom.wkbType()):
@@ -870,8 +872,6 @@ class DescontoBeiralPlugin:
         if nova.area() <= 0 or nova.area() >= geom.area():
             raise ErroBeiral("area resultante inconsistente (%.2f -> %.2f)"
                              % (geom.area(), nova.area()))
-        if nova.constGet().partCount() > 1 and not QgsWkbTypes.isMultiType(camada.wkbType()):
-            raise ErroBeiral("o recuo dividiu a edificacao em partes, mas a camada e de poligono simples")
         return geom, nova, aviso
 
     # ------------------------------------------------------------------

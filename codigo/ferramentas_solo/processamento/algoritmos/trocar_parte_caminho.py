@@ -120,9 +120,6 @@ class TrocarParteCaminho(QgsProcessingAlgorithm):
 
         if atualizar_original:
 
-            if not layer.isEditable():
-                layer.startEditing()
-
             alteracoes = {}
 
             for current, feat in enumerate(layer.getFeatures()):
@@ -140,12 +137,21 @@ class TrocarParteCaminho(QgsProcessingAlgorithm):
 
                 feedback.setProgress(int(current * total))
 
-            if alteracoes:
-                layer.dataProvider().changeAttributeValues(alteracoes)
-                layer.updateFields()
-                layer.triggerRepaint()
+            if feedback.isCanceled():
+                return {}
 
-            feedback.pushInfo(f'{len(alteracoes)} feição(ões) atualizada(s) na camada original.')
+            if alteracoes:
+                # nunca salva sozinho: fica tudo pendente na camada, e um único Ctrl+Z desfaz
+                if not layer.isEditable() and not layer.startEditing():
+                    raise QgsProcessingException(f"Não foi possível colocar a camada '{layer.name()}' em edição.")
+                layer.beginEditCommand('Trocar parte de caminho (Ferramentas Solo)')
+                for fid, attrs in alteracoes.items():
+                    layer.changeAttributeValues(fid, attrs)
+                layer.endEditCommand()
+                layer.triggerRepaint()
+                feedback.pushWarning('As alterações NÃO foram salvas: a camada ficou em edição para conferência.')
+
+            feedback.pushInfo(f'{len(alteracoes)} feição(ões) alterada(s) na camada original.')
 
             return {}
 

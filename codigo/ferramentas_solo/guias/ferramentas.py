@@ -979,11 +979,11 @@ class FerramentaMoverVertice(_BaseGuias):
             return
         if e.key() == QtC.Key_Escape:
             self.cancelar()
-            e.accept()
+            e.ignore()
             return
         if e.key() in (QtC.Key_Delete, QtC.Key_Backspace):
             self._apagar_vertice()
-            e.accept()   # nunca deixa o Delete apagar a feição selecionada
+            e.ignore()   # "usado": nunca deixa o Delete apagar a feição selecionada
             return
         if self.tecla_comum(e):
             if self.sel is not None:
@@ -992,9 +992,8 @@ class FerramentaMoverVertice(_BaseGuias):
                 self._mostrar_marcas_meio()      # tecla P mostra/esconde os meios originais
                 if self._ult_pt is not None:
                     self._medir(self._previa(self._ult_pt), self._ult_pt)
-            e.accept()
-            return
-        e.ignore()
+            e.ignore()
+        # outras teclas: o evento segue aceito e o QGIS aplica o padrão (setas, espaço, PgUp...)
 
 
 # =====================================================================
@@ -1148,9 +1147,8 @@ class FerramentaDesenhar(_BaseGuias):
             if self.pts:
                 self._medir(self._ult_pt)
         else:
-            e.ignore()
-            return
-        e.accept()
+            return      # tecla que a ferramenta não usa: o QGIS aplica o padrão
+        e.ignore()      # no QGIS, "ignorar" quer dizer que a ferramenta usou a tecla
 
     def cancelar(self):
         self.pts = []

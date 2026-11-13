@@ -426,8 +426,11 @@ class GerarAtualizarQuadras(QgsProcessingAlgorithm):
         quadras.beginEditCommand("Gerar/Atualizar quadras a partir dos lotes")
         total = len(novas)
         for k, (ch, orig, geom) in enumerate(novas):
-            if feedback.isCanceled():
-                break
+            if feedback.isCanceled():   # cancelado: desfaz o que já entrou e não salva nada
+                quadras.destroyEditCommand()
+                if not ja_editando:
+                    quadras.rollBack()
+                return {}
             feedback.setProgress(30.0 + 70.0 * k / max(total, 1))
             geom = QgsGeometry(geom)
             if destino_multi:

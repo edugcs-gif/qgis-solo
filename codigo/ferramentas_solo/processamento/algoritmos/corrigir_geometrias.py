@@ -273,6 +273,9 @@ class CorrigirGeometriasNaCamada(QgsProcessingAlgorithm):
                 obs = (obs + "; " if obs else "") + "área %.2f → %.2f (%+.1f%%)" % (a0, a1, 100.0 * (a1 - a0) / a0)
             correcoes.append((f, nova, obs))
 
+        if feedback.isCanceled():       # cancelado: não grava nada pela metade
+            return {}
+
         # ---------------- grava no buffer de edição (um único Ctrl+Z desfaz)
         estava_editando = camada.isEditable()
         corrigidas = []
