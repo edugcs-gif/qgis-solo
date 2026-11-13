@@ -623,14 +623,14 @@ def importar_poligonos(caminho, feedback, destino=None):
             vl = QgsVectorLayer(f"Polygon?crs={crs}", f"Layer: {nome_layer}", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([QgsField("Layer_CAD", QVariant.String), QgsField("Handle", QVariant.String),
-                              QgsField("Area", QVariant.Double)])
+                              QgsField("area", QVariant.Double, "numeric", 10, 3)])
             vl.updateFields()
 
             features = []
             for geom, handle in geometrias:
                 f = QgsFeature(vl.fields())
                 f.setGeometry(geom)
-                f.setAttributes([nome_layer, handle, geom.area()])
+                f.setAttributes([nome_layer, handle, round(geom.area(), 3)])
                 features.append(f)
 
             pr.addFeatures(features)
