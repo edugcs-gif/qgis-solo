@@ -199,10 +199,11 @@ class _BaseGuias(QgsMapTool):
         return [g.asPolyline()]
 
     # ---------- núcleo: onde o ponto "gruda" ----------
-    def resolver(self, p, guias, pontos_extra=(), ignorar_match=None, ignorar_seg=None):
+    def resolver(self, p, guias, pontos_extra=(), ignorar_match=None, ignorar_seg=None, evitar=None):
         """Retorna (ponto, rótulo, guias_ativas).
 
-        Prioridade: vértice do snap do QGIS > meio do lado, interseções (guia x guia, guia x
+        Prioridade: vértice do snap do QGIS > vértice das camadas visíveis (com I ligado) >
+        meio do lado, interseções (guia x guia, guia x
         borda de qualquer camada visível, borda x borda entre camadas) e pontos extras, o mais
         perto do cursor > projeção numa guia > snap em segmento do QGIS > livre.
         Segure SHIFT para desenhar livre.
@@ -231,6 +232,13 @@ class _BaseGuias(QgsMapTool):
             considerar(pt, rot, [])
         meio = self._meio_ligado()
         proximos = self.segmentos_proximos(p, tol, ignorar_seg, sempre=meio)
+        # vértice das camadas visíveis: vale mesmo com a aderência do QGIS desligada ou só na camada
+        # ativa, e ganha das interseções da guia com a borda que caem a centímetros dele
+        if self.intersec_camadas:
+            vs = [q for a, b, _n, _pm in proximos for q in (a, b)
+                  if _dist(q, p) <= tol and not (evitar is not None and _dist(q, evitar) < 1e-9)]
+            if vs:
+                return min(vs, key=lambda q: _dist(q, p)), "Vértice", []
         # meio do lado (ponto médio de cada face das camadas visíveis)
         if meio:
             for _a, _b, nome, pm in proximos:
@@ -744,7 +752,8 @@ class FerramentaMoverVertice(_BaseGuias):
                     (_dist(a, orig) < 1e-9 or _dist(b, orig) < 1e-9))
 
         extras = s.get("meios_orig", []) if self._meio_ligado() else []
-        pt, rot, ativas = self.resolver(p, s["guias"], extras, ignorar_match=ignorar, ignorar_seg=ignorar_seg)
+        pt, rot, ativas = self.resolver(p, s["guias"], extras, ignorar_match=ignorar, ignorar_seg=ignorar_seg,
+                                        evitar=orig)
         if self._pode_passo(rot, ativas):
             # na guia: o lado daquela guia (a guia nasce no vértice vizinho); livre: o lado anterior
             ancora, guia = (ativas[0].o, ativas[0]) if ativas else (s["ancora"], None)
