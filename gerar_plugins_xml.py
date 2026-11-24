@@ -6,7 +6,7 @@ Uso:  python gerar_plugins_xml.py            (na pasta do repositório)
 
 O que ele faz:
 1. Para cada complemento em codigo/<pasta>/ (com metadata.txt), gera o zip
-   <pasta>_<versão>.zip na raiz e apaga os zips de versões antigas dele.
+   <pasta>_<versão>.zip na raiz e apaga os zips de versões antigas dele (mantém o da versão anterior).
 2. Lê o metadata.txt de dentro de cada zip da raiz e escreve o plugins.xml
    (se houver mais de uma versão do mesmo complemento, só a maior entra).
 
@@ -87,10 +87,14 @@ def empacotar():
                     caminho = pathlib.Path(raiz) / nome
                     z.write(caminho, caminho.relative_to(codigo).as_posix())
         print("ZIP %-28s %-8s -> %s" % (plugin.name, versao, destino.name))
-        for velho in PASTA.glob(plugin.name + "_*.zip"):
-            if velho != destino and re.fullmatch(re.escape(plugin.name) + r"_[\d.]+\.zip", velho.name):
-                velho.unlink()
-                print("    apagado zip antigo:", velho.name)
+        padrao = re.escape(plugin.name) + r"_([\d.]+)\.zip"
+        velhos = sorted((v for v in PASTA.glob(plugin.name + "_*.zip")
+                         if v != destino and re.fullmatch(padrao, v.name)),
+                        key=lambda v: versao_tupla(re.fullmatch(padrao, v.name).group(1)))
+        # o zip da versão anterior fica: o GitHub serve o plugins.xml antigo por alguns minutos
+        for velho in velhos[:-1]:
+            velho.unlink()
+            print("    apagado zip antigo:", velho.name)
 
 
 def ler_metadata(caminho_zip):
