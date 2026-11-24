@@ -41,6 +41,10 @@ via('Rua F', 'F1', (400, 0), (410, 0))                      # mesma rua, eixo pa
 via('Rua F', 'F2', (410, 0), (440, 0))
 via('SEM DENOMINAÇÃO OFICIAL', 'G1', (600, 500), (720, 500))  # duas ruas diferentes, mesmo nome
 via('SEM DENOMINAÇÃO OFICIAL', 'G2', (700, 420), (700, 600))
+via(None, 'H1', (800, 0), (840, 0))                          # duas ruas paralelas sem nome
+via(None, 'H2', (800, 30), (840, 30))
+via('SEM DENOMINAÇÃO OFICIAL', 'J1', (900, 0), (940, 0))     # duas ruas paralelas com o mesmo nome
+via('SEM DENOMINAÇÃO OFICIAL', 'J2', (900, 30), (940, 30))
 
 esperado = {}  # id -> ([testada_1, testada_2, ...], precisão)
 def lote(id_, pts, testadas, precisao):
@@ -72,6 +76,9 @@ lote('duas_frentes', [(10, 305), (20, 305), (20, 325), (10, 325)], [10, 10], 'AL
 lote('eixo_partido', [(405, 5), (410, 5), (425, 5), (425, 25), (405, 25)], [20], 'ALTA')
 # esquina de duas ruas com o mesmo nome genérico: duas testadas
 lote('esquina_mesmo_nome', [(680, 505), (695, 505), (695, 525), (680, 525)], [20, 15], 'ALTA')
+# lote que vai de uma rua a outra, as duas sem nome / com o mesmo nome: duas testadas, não uma de 20 m
+lote('duas_frentes_sem_nome', [(810, 5), (820, 5), (820, 25), (810, 25)], [10, 10], 'ALTA')
+lote('duas_frentes_mesmo_nome', [(910, 5), (920, 5), (920, 25), (910, 25)], [10, 10], 'ALTA')
 
 def rodar(**extra):
     return processing.run('ferramentas_solo:calcular_testadas_logradouro_colineares', dict({
@@ -102,5 +109,7 @@ for id_, (testadas, _) in esperado.items():
 assert [o[2:] for o in sorted(por_uuid['{uuid-esquina_chanfro}'])] == [('Rua B', 'B'), ('Rua A', 'A')]
 assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes}']) == ['D', 'E']
 assert [o[3] for o in por_uuid['{uuid-eixo_partido}']] == ['F2']  # trecho com 15 dos 20 m
+assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes_sem_nome}']) == ['H1', 'H2']
+assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes_mesmo_nome}']) == ['J1', 'J2']
 print('OK -', len(esperado), 'lotes conferidos')
 app.exitQgis()

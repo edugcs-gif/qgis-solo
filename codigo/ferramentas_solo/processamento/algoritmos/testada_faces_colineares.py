@@ -12,9 +12,10 @@ Uma face entra na testada de uma via quando:
   3. ela está voltada para o eixo: a linha do meio da face até o eixo não
      atravessa o próprio lote (descarta o fundo) nem outro lote (descarta
      partes do lote escondidas atrás do vizinho).
-Faces de via com o mesmo nome e na mesma direção formam uma testada só: eixo
-partido em vários trechos não divide a testada, e duas ruas diferentes com o
-mesmo nome (ex.: "SEM DENOMINAÇÃO OFICIAL") numa esquina não se juntam.
+Faces de via com o mesmo nome e voltadas para o mesmo lado formam uma testada
+só: eixo partido em vários trechos não divide a testada, e duas ruas diferentes
+com o mesmo nome (ex.: "SEM DENOMINAÇÃO OFICIAL", ou sem nome) numa esquina ou
+na frente e no fundo do lote não se juntam.
 Sem nenhuma face alinhada (ex.: lote no fim da rua), vale a face mais próxima
 de uma via, se o caminho até ela estiver livre.
 
@@ -65,7 +66,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
     OBSTRUCAO_MAX = 0.50    # quanto o caminho face -> eixo pode cruzar um lote (frestas de digitalização)
     FACE_MINIMA = 0.20      # regra da face mais próxima (igual à ferramenta antiga): descarta chanfros
-    DIRECAO_MAX = 45.0      # faces da mesma via com direções mais diferentes que isso são frentes distintas
+    DIRECAO_MAX = 45.0      # faces da mesma via voltadas para lados mais diferentes que isso são frentes distintas
 
     ALTA, MEDIA, SEM_TESTADA = 'ALTA', 'MÉDIA', 'SEM TESTADA'
 
@@ -97,7 +98,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             • o meio dela está a até 'Tolerância' metros do eixo;
             • ela é paralela ao trecho do eixo em frente a ela (até 'Ângulo máximo');
             • ela está voltada para o eixo (o caminho até o eixo não cruza o próprio lote nem outro lote).
-            Faces de via com o mesmo nome e na mesma direção somam numa testada só.
+            Faces de via com o mesmo nome e voltadas para o mesmo lado somam numa testada só.
 
             Lotes: testada_1, testada_2... e precisao_testada.
             Linhas: uma feição por testada, com lote_uuid, testada_num, via, comprimento e precisao.
@@ -379,7 +380,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                 face = QgsGeometry.fromPolylineXY([p1, p2])
                 r = self._via_da_face(face, candidatas, tolerancia, angulo_max, geoms_lotes, indice_lotes)
                 if r:
-                    aceitas.append((face,) + r)
+                    aceitas.append((face,) + r + (self._lado(lote, face),))
         if aceitas:
             return self._agrupar_por_via(aceitas, vias), self.ALTA
 
@@ -413,10 +414,11 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         return None
 
     def _agrupar_por_via(self, aceitas, vias):
-        """Uma testada por via de frente: mesmo nome de via e mesma direção (esquina muda a direção)."""
+        """Uma testada por via de frente: mesmo nome de via e face voltada para o mesmo lado
+        (na esquina o lado muda 90°; na frente e no fundo do lote, 180°)."""
         grupos = []
-        for face, dist, vid in aceitas:
-            nome, direcao = vias['nome'][vid], self._direcao(face)
+        for face, dist, vid, direcao in aceitas:
+            nome = vias['nome'][vid]
             iguais = [g for g in grupos if g['nome'] == nome
                       and any(self._diferenca(direcao, x) <= self.DIRECAO_MAX for x in g['direcoes'])]
             if not iguais:
@@ -461,15 +463,20 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         return (melhor[1], math.sqrt(melhor[0]), melhor[2]) if melhor else None
 
     @staticmethod
-    def _direcao(face):
-        """Direção da face em graus, 0-180 (sem sentido)."""
+    def _lado(lote, face):
+        """Para onde a face olha, em graus (0-360): a perpendicular dela que sai do lote."""
         a, b = face.vertexAt(0), face.vertexAt(1)
-        return math.degrees(math.atan2(b.y() - a.y(), b.x() - a.x())) % 180.0
+        ang = math.atan2(b.y() - a.y(), b.x() - a.x()) + math.pi / 2
+        meio = face.interpolate(face.length() / 2.0).asPoint()
+        fora = QgsPointXY(meio.x() + 0.01 * math.cos(ang), meio.y() + 0.01 * math.sin(ang))
+        if lote.contains(QgsGeometry.fromPointXY(fora)):
+            ang += math.pi
+        return math.degrees(ang) % 360.0
 
     @staticmethod
     def _diferenca(a, b):
-        d = abs(a - b) % 180.0
-        return min(d, 180.0 - d)
+        d = abs(a - b) % 360.0
+        return min(d, 360.0 - d)
 
     @staticmethod
     def _angulo(a, b, c, d):
