@@ -4,7 +4,7 @@ Rodar na raiz do repositório (fica fora do zip do complemento):
     "C:\\Program Files\\QGIS 3.44.12\\bin\\python-qgis-ltr.bat" testes\\teste_testada_faces_colineares.py
 """
 import math, os, sys
-from qgis.core import QgsApplication, QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY as P
+from qgis.core import QgsApplication, QgsVectorLayer, QgsFeature, QgsGeometry, QgsWkbTypes, QgsPointXY as P
 
 app = QgsApplication([], False)
 app.initQgis()
@@ -45,6 +45,7 @@ via(None, 'H1', (800, 0), (840, 0))                          # duas ruas paralel
 via(None, 'H2', (800, 30), (840, 30))
 via('SEM DENOMINAÇÃO OFICIAL', 'J1', (900, 0), (940, 0))     # duas ruas paralelas com o mesmo nome
 via('SEM DENOMINAÇÃO OFICIAL', 'J2', (900, 30), (940, 30))
+via('Rua K', 'K', (1000, 0), (1040, 0))
 
 esperado = {}  # id -> ([testada_1, testada_2, ...], precisão)
 def lote(id_, pts, testadas, precisao):
@@ -79,6 +80,8 @@ lote('esquina_mesmo_nome', [(680, 505), (695, 505), (695, 525), (680, 525)], [20
 # lote que vai de uma rua a outra, as duas sem nome / com o mesmo nome: duas testadas, não uma de 20 m
 lote('duas_frentes_sem_nome', [(810, 5), (820, 5), (820, 25), (810, 25)], [10, 10], 'ALTA')
 lote('duas_frentes_mesmo_nome', [(910, 5), (920, 5), (920, 25), (910, 25)], [10, 10], 'ALTA')
+# frente com degrau de 1 m: testada de 4 + 6 m, em duas partes (o degrau não conta)
+lote('frente_degrau', [(1010, 5), (1014, 5), (1014, 6), (1020, 6), (1020, 25), (1010, 25)], [10], 'ALTA')
 
 def rodar(**extra):
     return processing.run('ferramentas_solo:calcular_testadas_logradouro_colineares', dict({
@@ -101,7 +104,8 @@ uuid_por_id = {f['id']: f['uuid'] for f in lotes.getFeatures()}
 por_uuid = {}
 for f in linhas.getFeatures():
     por_uuid.setdefault(f['lote_uuid'], []).append((f['testada_num'], f['comprimento'], f['via'], f['via_cod']))
-    assert f.geometry().constGet().numGeometries() == 1, 'testada partida'
+    partes = f.geometry().constGet().numGeometries()
+    assert partes == (2 if f['lote_uuid'] == '{uuid-frente_degrau}' else 1), ('testada partida', f['lote_uuid'], partes)
 for id_, (testadas, _) in esperado.items():
     obtido = sorted(por_uuid.get(uuid_por_id[id_], []))
     assert [o[0] for o in obtido] == list(range(1, len(testadas) + 1)), (id_, obtido)
@@ -111,5 +115,20 @@ assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes}']) == ['D', 'E']
 assert [o[3] for o in por_uuid['{uuid-eixo_partido}']] == ['F2']  # trecho com 15 dos 20 m
 assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes_sem_nome}']) == ['H1', 'H2']
 assert sorted(o[3] for o in por_uuid['{uuid-duas_frentes_mesmo_nome}']) == ['J1', 'J2']
-print('OK -', len(esperado), 'lotes conferidos')
+# linhas simples: uma feição por parte, cada uma com o próprio comprimento
+lin = rodar(TIPO_LINHA=1)['OUTPUT_LINHAS']
+assert lin.wkbType() == QgsWkbTypes.LineString, lin.wkbType()
+degrau = sorted((f['testada_num'], f['comprimento']) for f in lin.getFeatures() if f['lote_uuid'] == '{uuid-frente_degrau}')
+assert degrau == [(1, 4.0), (1, 6.0)], degrau
+assert lin.featureCount() == linhas.featureCount() + 1
+
+# somente a testada principal
+res = rodar(SOMENTE_PRINCIPAL=True)
+campos = [n for n in res['OUTPUT'].fields().names() if n.startswith('testada_')]
+assert campos == ['testada_1'], campos
+t1 = {f['id']: f['testada_1'] for f in res['OUTPUT'].getFeatures()}
+assert t1['esquina_chanfro'] == 18 and t1['ponta_da_rua_a'] == 20 and t1['duas_frentes'] == 10
+assert {f['testada_num'] for f in res['OUTPUT_LINHAS'].getFeatures()} == {1}
+assert res['OUTPUT_LINHAS'].featureCount() == sum(1 for t, _ in esperado.values() if t)
+print('OK -', len(esperado), 'lotes conferidos (multiparte, simples e só a principal)')
 app.exitQgis()

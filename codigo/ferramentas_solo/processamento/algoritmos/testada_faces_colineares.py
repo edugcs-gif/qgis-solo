@@ -39,6 +39,8 @@ from qgis.core import (
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
+    QgsProcessingParameterBoolean,
+    QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterField,
     QgsProcessingParameterNumber,
@@ -56,6 +58,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
     CAMPO_COD_VIA = 'CAMPO_COD_VIA'
     TOLERANCIA = 'TOLERANCIA'
     ANGULO_MAX = 'ANGULO_MAX'
+    TIPO_LINHA = 'TIPO_LINHA'
+    SOMENTE_PRINCIPAL = 'SOMENTE_PRINCIPAL'
     OUTPUT = 'OUTPUT'
     OUTPUT_LINHAS = 'OUTPUT_LINHAS'
 
@@ -106,6 +110,10 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             do logradouro ou o uuid do eixo); com eixo partido, vale o trecho que cobre a maior parte da testada.
             Precisão: ALTA (faces alinhadas ao eixo), MÉDIA (nenhuma face alinhada, ex.: lote no fim da rua:
             vale a face mais próxima), SEM TESTADA (nenhuma via perto com caminho livre).
+
+            'Tipo das linhas': Multiparte = uma feição por testada (a testada com degrau na frente fica com
+            várias partes); Simples = uma feição para cada parte, com o comprimento daquela parte.
+            'Somente a testada principal': guarda só a maior testada de cada lote (testada_1), nos lotes e nas linhas.
             """
         )
 
@@ -150,6 +158,22 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
                 defaultValue=20.0,
                 minValue=0.0,
                 maxValue=60.0
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.TIPO_LINHA,
+                self.tr('Tipo das linhas das testadas'),
+                options=[self.tr('Multiparte (uma feição por testada)'),
+                         self.tr('Simples (uma feição para cada parte da testada)')],
+                defaultValue=0
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.SOMENTE_PRINCIPAL,
+                self.tr('Somente a testada principal (a maior de cada lote)'),
+                defaultValue=False
             )
         )
         self.addParameter(
@@ -206,6 +230,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
         tolerancia = self.parameterAsDouble(parameters, self.TOLERANCIA, context)
         angulo_max = self.parameterAsDouble(parameters, self.ANGULO_MAX, context)
         campo_cod = self.parameterAsString(parameters, self.CAMPO_COD_VIA, context) or None
+        simples = self.parameterAsEnum(parameters, self.TIPO_LINHA, context) == 1
+        somente_principal = self.parameterAsBoolean(parameters, self.SOMENTE_PRINCIPAL, context)
 
         if not lotes_layer or not vias_layer:
             raise QgsProcessingException('Camadas de entrada inválidas.')
@@ -272,6 +298,8 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             else:
                 resultados.append(self._testadas_do_lote(g, vias, indice_vias, tolerancia, angulo_max,
                                                          geoms_lotes, indice_lotes))
+        if somente_principal:  # a lista já vem da maior para a menor
+            resultados = [(t[:1], p) for t, p in resultados]
         n_testadas = max([len(t) for t, _ in resultados] + [1])
 
         # Campos da camada de saída (resultados de rodadas anteriores não são copiados)
@@ -308,7 +336,7 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
 
             linha_sink, linha_dest_id = self.parameterAsSink(
                 parameters, self.OUTPUT_LINHAS, context, linha_fields,
-                QgsWkbTypes.MultiLineString, lotes_layer.crs()
+                QgsWkbTypes.LineString if simples else QgsWkbTypes.MultiLineString, lotes_layer.crs()
             )
 
         # 2ª passada: grava lotes e linhas
@@ -325,19 +353,24 @@ class CalculadoraTestadasColinearesQGIS(QgsProcessingAlgorithm):
             if linha_sink:
                 uuid = lote_feature.attribute(campo_uuid) if campo_uuid else None
                 for n, (comprimento, linha, distancia, vid) in enumerate(testadas, 1):
-                    linha.convertToMultiType()
-                    linha_feat = QgsFeature(linha_fields)
-                    linha_feat.setGeometry(linha)
-                    linha_feat.setAttribute('lote_fid', lote_feature.id())
-                    linha_feat.setAttribute('lote_uuid', uuid)
-                    linha_feat.setAttribute('testada_num', n)
-                    linha_feat.setAttribute('via', vias['original'][vid])
-                    if campo_cod:
-                        linha_feat.setAttribute(campo_linha_cod, vias['codigo'][vid])
-                    linha_feat.setAttribute('comprimento', comprimento)
-                    linha_feat.setAttribute('distancia_via', distancia)
-                    linha_feat.setAttribute('precisao', precisao)
-                    linha_sink.addFeature(linha_feat, QgsFeatureSink.FastInsert)
+                    if simples:  # uma feição por parte, cada uma com o próprio comprimento
+                        partes = [(p, round(p.length(), 2)) for p in linha.asGeometryCollection()]
+                    else:
+                        linha.convertToMultiType()
+                        partes = [(linha, comprimento)]
+                    for geom, comp in partes:
+                        linha_feat = QgsFeature(linha_fields)
+                        linha_feat.setGeometry(geom)
+                        linha_feat.setAttribute('lote_fid', lote_feature.id())
+                        linha_feat.setAttribute('lote_uuid', uuid)
+                        linha_feat.setAttribute('testada_num', n)
+                        linha_feat.setAttribute('via', vias['original'][vid])
+                        if campo_cod:
+                            linha_feat.setAttribute(campo_linha_cod, vias['codigo'][vid])
+                        linha_feat.setAttribute('comprimento', comp)
+                        linha_feat.setAttribute('distancia_via', distancia)
+                        linha_feat.setAttribute('precisao', precisao)
+                        linha_sink.addFeature(linha_feat, QgsFeatureSink.FastInsert)
 
         # Relatório Final
         contagem = {p: sum(1 for _, q in resultados if q == p) for p in (self.ALTA, self.MEDIA, self.SEM_TESTADA)}
