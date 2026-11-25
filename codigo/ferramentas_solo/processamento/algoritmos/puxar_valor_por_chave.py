@@ -10,10 +10,13 @@ from qgis.core import (
     QgsProcessingParameterField,
     QgsProcessingParameterBoolean,
     QgsVariantUtils,
+    QgsExpression,
+    QgsExpressionContext,
+    QgsExpressionContextUtils,
     QgsFeatureRequest
 )
 
-from ._util import sem_thread
+from ._util import sem_geometria, sem_thread
 
 class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
     CAMADA_DESTINO = 'CAMADA_DESTINO'
@@ -122,6 +125,14 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
         if texto in ['', 'null', 'none']:
             return None
         return texto
+
+    @staticmethod
+    def _igual(novo, antigo):
+        nulo_novo = novo is None or QgsVariantUtils.isNull(novo)
+        nulo_antigo = antigo is None or QgsVariantUtils.isNull(antigo)
+        if nulo_novo or nulo_antigo:
+            return nulo_novo and nulo_antigo
+        return type(novo) == type(antigo) and novo == antigo
 
     def _converter_valor(self, valor, campo_destino):
         """
@@ -232,23 +243,46 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
         else:
             requisicao = QgsFeatureRequest()
 
+        # só a chave e o valor, sem geometria: ler a camada inteira era o que mais demorava
+        idx_destino = camada_destino.fields().indexOf(valor_destino_nome) if valor_destino_nome else -1
+        campo_destino_obj = camada_destino.fields().at(idx_destino) if idx_destino != -1 else None
+        # Campos com valor padrão "aplicar ao atualizar" (usuário, data da edição...). O QGIS recalcula
+        # cada um relendo a feição inteira do arquivo a cada alteração, o que deixava a gravação muito
+        # lenta; aqui eles são calculados nesta mesma leitura e gravados junto com o valor puxado.
+        campos_auto = [i for i in range(camada_destino.fields().count())
+                       if camada_destino.defaultValueDefinition(i).applyOnUpdate()
+                       and camada_destino.defaultValueDefinition(i).expression()]
+        if not campos_auto or apenas_selecao or idx_destino == -1:
+            campos_auto = []
+            requisicao.setFlags(sem_geometria())
+            requisicao.setSubsetOfAttributes([i for i in (camada_destino.fields().indexOf(chave_destino_nome),
+                                                          idx_destino) if i != -1])
+        elif not any(QgsExpression(camada_destino.defaultValueDefinition(i).expression()).needsGeometry()
+                     for i in campos_auto):
+            requisicao.setFlags(sem_geometria())
+        ctx_auto = QgsExpressionContext(QgsExpressionContextUtils.globalProjectLayerScopes(camada_destino))
+
         # --- STEP 1: Mapear os dados da origem ---
         mapa_origem = {}
-        for feat in fonte_origem.getFeatures():
-            chave_limpa = self._limpar_chave(feat[chave_origem_nome])
+        campos_origem = fonte_origem.fields()
+        i_chave_origem = campos_origem.indexOf(chave_origem_nome)
+        i_valor_origem = campos_origem.indexOf(valor_origem_nome) if valor_origem_nome else -1
+        req_origem = QgsFeatureRequest().setFlags(sem_geometria())
+        req_origem.setSubsetOfAttributes([i for i in (i_chave_origem, i_valor_origem) if i != -1])
+        for feat in fonte_origem.getFeatures(req_origem):
+            chave_limpa = self._limpar_chave(feat.attribute(i_chave_origem))
             if chave_limpa is not None:
-                val = feat[valor_origem_nome] if valor_origem_nome else True
+                val = feat.attribute(i_valor_origem) if i_valor_origem != -1 else True
                 mapa_origem[chave_limpa] = val
 
         # --- STEP 2: Preparar índices e alterações ---
         ids_para_selecionar = []
         alteracoes_atributos = {}
-        
-        idx_destino = camada_destino.fields().indexOf(valor_destino_nome) if valor_destino_nome else -1
-        campo_destino_obj = camada_destino.fields().at(idx_destino) if idx_destino != -1 else None
+        ja_iguais = 0
+        i_chave_destino = camada_destino.fields().indexOf(chave_destino_nome)
 
         for feat in camada_destino.getFeatures(requisicao):
-            chave_limpa_dest = self._limpar_chave(feat[chave_destino_nome])
+            chave_limpa_dest = self._limpar_chave(feat.attribute(i_chave_destino))
             
             if chave_limpa_dest and chave_limpa_dest in mapa_origem:
                 ids_para_selecionar.append(feat.id())
@@ -256,7 +290,19 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
                 if not apenas_selecao and idx_destino != -1:
                     valor_bruto = mapa_origem[chave_limpa_dest]
                     novo_valor = self._converter_valor(valor_bruto, campo_destino_obj)
-                    alteracoes_atributos[feat.id()] = {idx_destino: novo_valor}
+                    antigo = feat.attribute(idx_destino)
+                    if self._igual(novo_valor, antigo):
+                        ja_iguais += 1   # já está com esse valor: não regrava (nem dispara os valores automáticos)
+                        continue
+                    novos, antigos = {idx_destino: novo_valor}, {idx_destino: antigo}
+                    if campos_auto:  # como o QGIS faz: cada campo automático já vê o valor novo
+                        feat.setAttribute(idx_destino, novo_valor)
+                        for i in campos_auto:
+                            v = camada_destino.defaultValue(i, feat, ctx_auto)
+                            antigos.setdefault(i, feat.attribute(i))
+                            novos[i] = v
+                            feat.setAttribute(i, v)
+                    alteracoes_atributos[feat.id()] = (novos, antigos)
 
         # --- STEP 3: Aplicar Alterações Seguras ---
         if apenas_selecao:
@@ -272,8 +318,8 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
                     return {}
 
                 camada_destino.beginEditCommand("Puxar valor por chave comum (Ferramentas Solo)")
-                for feat_id, attrs in alteracoes_atributos.items():
-                    camada_destino.changeAttributeValues(feat_id, attrs)
+                for feat_id, (attrs, antigos) in alteracoes_atributos.items():
+                    camada_destino.changeAttributeValues(feat_id, attrs, antigos, skipDefaultValues=True)
                 camada_destino.endEditCommand()
 
                 feedback.pushWarning(
@@ -285,5 +331,7 @@ class TransferirValoresTabelasECamadas(QgsProcessingAlgorithm):
         feedback.pushInfo(f"Correspondências encontradas: {len(ids_para_selecionar)}")
         if not apenas_selecao:
             feedback.pushInfo(f"Atributos atualizados na camada '{camada_destino.name()}': {len(alteracoes_atributos)}")
+            if ja_iguais:
+                feedback.pushInfo(f"Já estavam com o mesmo valor (não regravados): {ja_iguais}")
 
         return {'REGISTROS_PROCESSADOS': len(ids_para_selecionar)}
