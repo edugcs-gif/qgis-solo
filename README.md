@@ -5,7 +5,7 @@ O QGIS lê a lista (`plugins.xml`) e os zips direto daqui. Funciona de qualquer 
 
 | Complemento | O que tem |
 |---|---|
-| **Ferramentas Solo** | Barra com Desconto de Beiral, Remover Filetes, Guias CAD com medidas ao vivo, Comprimento e Área, Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF e Relatório de Produtividade, mais os scripts da Solo em Processamento > Ferramentas Solo |
+| **Ferramentas Solo** | Barra com Desconto de Beiral, Remover Filetes, Guias CAD com medidas ao vivo, Comprimento e Área, Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF, Relatório de Produtividade e Backup de Camadas, mais os scripts da Solo em Processamento > Ferramentas Solo |
 
 Autor: Edu Gabriel Castilho Sembalista.
 Menção honrosa: Joel Victor Feitosa da Silva, autor do complemento original "Comprimento e Área".

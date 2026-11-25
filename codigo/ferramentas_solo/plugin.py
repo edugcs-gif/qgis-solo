@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Ferramentas Solo
 Barra de complementos: Desconto de Beiral, Remover Filetes, Guias CAD (com medidas ao vivo),
-Comprimento e Área, Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF e
-Relatório de Produtividade. Todo botão da barra aceita atalho em
+Comprimento e Área, Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF,
+Relatório de Produtividade e Backup de Camadas. Todo botão da barra aceita atalho em
 Configurações > Atalhos de teclado.
 Caixa de Ferramentas de Processamento: provedor "Ferramentas Solo" com os scripts da Solo.
 
@@ -43,6 +43,7 @@ ANTIGOS = {
     "selecao_sobreposicao": "Seleção por Sobreposição",
     "atualizador_geocodificacao": "Atualizador Geocodificação",
     "numerar_lotes": "Numerar Lotes",
+    "backup_camadas": "Backup de Camadas",
 }
 
 # complementos extras da barra, na ordem dos botões: (módulo, classe, separador antes)
@@ -53,6 +54,7 @@ EXTRAS = (
     ("numerar.plugin", "NumerarLotesPlugin", False),
     ("dxf.plugin", "ImportarExportarDXF", True),
     ("relatorio.plugin", "RelatorioProducaoPlugin", True),
+    ("backup.plugin", "BackupCamadas", True),
 )
 
 
@@ -148,7 +150,7 @@ class FerramentasSolo:
         # Comprimento e Área (rótulos fixos das camadas em edição)
         self.comprimento.initGui()
 
-        # Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF, Relatório
+        # Preencher Campo, Seleção por Sobreposição, Importar/Exportar DXF, Relatório, Backup
         for modulo, classe, separar in EXTRAS:
             if separar:
                 self.toolbar.addSeparator()
