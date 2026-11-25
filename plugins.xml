@@ -52,9 +52,9 @@
     <deprecated><![CDATA[False]]></deprecated>
     <plugin_dependencies><![CDATA[]]></plugin_dependencies>
     <file_name>ferramentas_solo.zip</file_name>
-    <download_url>https://raw.githubusercontent.com/edugcs-gif/qgis-solo/main/ferramentas_solo_5.11.zip</download_url>
+    <download_url>https://raw.githubusercontent.com/edugcs-gif/qgis-solo/backup-camadas/ferramentas_solo_5.11.zip</download_url>
     <uploaded_by>Edu Gabriel Castilho Sembalista</uploaded_by>
-    <create_date>2026-11-25T14:35:24</create_date>
-    <update_date>2026-11-25T14:35:24</update_date>
+    <create_date>2026-11-25T14:46:53</create_date>
+    <update_date>2026-11-25T14:46:53</update_date>
   </pyqgis_plugin>
 </plugins>
