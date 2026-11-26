@@ -1,5 +1,6 @@
 # Claude responde quando alguém escreve @claude numa issue, PR ou revisão.
-# Precisa do secret ANTHROPIC_API_KEY (Settings > Secrets and variables > Actions).
+# Usa a assinatura Pro/Max: secret CLAUDE_CODE_OAUTH_TOKEN, gerado com `claude setup-token`
+# (Settings > Secrets and variables > Actions).
 name: Claude Code
 
 on:
@@ -32,4 +33,4 @@ jobs:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
