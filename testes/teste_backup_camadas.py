@@ -71,4 +71,13 @@ destino = aviso.split('Backup salvo em ')[1].split(', mas')[0]
 con = sqlite3.connect(destino)
 assert sorted(r[0] for r in con.execute("select table_name from gpkg_contents where table_name != 'layer_styles'")) \
     == ['Lotes', 'lotes_2', 'tab']
+
+# coluna geometry de tabela aberta sem geometria (tumulo no PostGIS): grava como texto WKT, não falha
+from qgis.PyQt.QtCore import QVariant
+from qgis.core import QgsField, QgsFields
+campos = QgsFields(); campos.append(QgsField('id', QVariant.Int)); campos.append(QgsField('geom', QVariant.UserType, 'geometry'))
+assert type(P.conversor(campos)) is P.RenomearETexto and type(P.conversor(lotes.fields())) is P.Renomear
+conv = P.conversor(campos)
+assert conv.fieldDefinition(campos.at(1)).type() == QVariant.String and conv.fieldDefinition(campos.at(0)).type() == QVariant.Int
+assert conv.convert(1, QgsGeometry.fromWkt('Point (1 2)')) == 'Point (1 2)' and conv.convert(0, 7) == 7
 print('OK')

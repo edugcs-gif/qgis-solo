@@ -8,8 +8,8 @@ import os
 from datetime import datetime
 
 from qgis.PyQt.QtGui import QIcon
-from qgis.core import (Qgis, QgsApplication, QgsField, QgsMapLayerStyle, QgsMessageLog, QgsProject,
-                       QgsProviderRegistry, QgsTask, QgsVectorFileWriter, QgsVectorLayer)
+from qgis.core import (Qgis, QgsApplication, QgsField, QgsGeometry, QgsMapLayerStyle, QgsMessageLog, QgsProject,
+                       QgsProviderRegistry, QgsTask, QgsVariantUtils, QgsVectorFileWriter, QgsVectorLayer)
 try:
     from qgis.PyQt.QtWidgets import QAction          # Qt5
 except ImportError:
@@ -54,6 +54,42 @@ class Renomear(QgsVectorFileWriter.FieldValueConverter):
         novo = QgsField(campo)
         novo.setName(self.nomes.get(campo.name(), campo.name()))
         return novo
+
+
+def tipo_proprio(campo):
+    # tipo do próprio QGIS (QMetaType.User em diante), ex.: coluna geometry de tabela aberta sem geometria
+    return campo.type() >= 1024
+
+
+def texto(nome):
+    try:
+        from qgis.PyQt.QtCore import QMetaType
+        return QgsField(nome, QMetaType.Type.QString)          # QGIS >= 3.38 / Qt6
+    except (ImportError, AttributeError, TypeError):
+        from qgis.PyQt.QtCore import QVariant
+        return QgsField(nome, QVariant.String)
+
+
+class RenomearETexto(Renomear):
+    """Também grava como texto (geometria em WKT) os campos de tipo que o GeoPackage não aceita.
+    Classe à parte: o convert em Python roda para cada valor, só vale pagar isso quando precisa."""
+
+    def __init__(self, campos):
+        super().__init__(campos)
+        self.textos = {i for i, c in enumerate(campos) if tipo_proprio(c)}
+
+    def fieldDefinition(self, campo):
+        novo = super().fieldDefinition(campo)
+        return texto(novo.name()) if tipo_proprio(campo) else novo
+
+    def convert(self, i, valor):
+        if i not in self.textos or valor is None or QgsVariantUtils.isNull(valor):
+            return valor
+        return valor.asWkt() if isinstance(valor, QgsGeometry) else str(valor)
+
+
+def conversor(campos):
+    return (RenomearETexto if any(tipo_proprio(c) for c in campos) else Renomear)(campos)
 
 
 def gravar(camada, destino, tabela, conv, contexto):
@@ -144,7 +180,7 @@ class BackupCamadas:
         vistos = {"layer_styles"}       # tabela dos estilos no GeoPackage
         # cópia de cada camada (sem as edições pendentes) para ler em segundo plano, como o Processamento faz;
         # os conversores ficam vivos em self.trabalhos enquanto grava (sem a referência o QGIS fecha)
-        self.trabalhos = [(c.clone(), nome_unico(c.name(), vistos), Renomear(c.fields())) for c in camadas]
+        self.trabalhos = [(c.clone(), nome_unico(c.name(), vistos), conversor(c.fields())) for c in camadas]
         self.originais = camadas
         contexto = projeto.transformContext()
 
